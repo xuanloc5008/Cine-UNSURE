@@ -14,7 +14,7 @@ from torch.utils.data import ConcatDataset, DataLoader
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from score_cunsure.checkpoint import save_score_checkpoint
-from score_cunsure.data import FrameFolderDataset, VolumeFrameDataset
+from score_cunsure.data import FrameFolderDataset, TensorFrameDataset, VolumeFrameDataset
 from score_cunsure.score_model import ScoreLossConfig, ScoreUNet, ardae_score_loss
 
 
@@ -42,6 +42,11 @@ def parse_args() -> argparse.Namespace:
         help="3D frame layout after time extraction: hwd, dhw, chwd, cdhw, hwdc, or auto",
     )
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--preprocessed",
+        action="store_true",
+        help="Read cached tensor frames `[C,*spatial]` instead of raw cine volumes",
+    )
     parser.add_argument(
         "--include",
         nargs="*",
@@ -81,6 +86,23 @@ def maybe_resize(batch: torch.Tensor, image_size: int | None, depth_size: int | 
     )
 
 
+def collate_and_resize(
+    samples: list[torch.Tensor],
+    *,
+    image_size: int | None,
+    depth_size: int | None,
+    spatial_dims: int,
+) -> torch.Tensor:
+    """Resize variable-size frames before stacking them into a batch."""
+    if image_size is None:
+        return torch.stack(samples, dim=0)
+    resized = [
+        maybe_resize(sample.unsqueeze(0), image_size=image_size, depth_size=depth_size, spatial_dims=spatial_dims).squeeze(0)
+        for sample in samples
+    ]
+    return torch.stack(resized, dim=0)
+
+
 def main() -> None:
     args = parse_args()
     torch.manual_seed(args.seed)
@@ -89,7 +111,17 @@ def main() -> None:
 
     datasets = []
     for data_root in args.data:
-        if args.spatial_dims == 2:
+        if args.preprocessed:
+            dataset_i = TensorFrameDataset(
+                data_root,
+                channels=args.channels,
+                npz_key=args.npz_key,
+                spatial_dims=args.spatial_dims,
+                limit=args.limit,
+                include_patterns=args.include,
+                exclude_patterns=args.exclude,
+            )
+        elif args.spatial_dims == 2:
             dataset_i = FrameFolderDataset(
                 data_root,
                 channels=args.channels,
@@ -116,7 +148,19 @@ def main() -> None:
 
     dataset = datasets[0] if len(datasets) == 1 else ConcatDataset(datasets)
     print(f"total training frames={len(dataset)}")
-    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, drop_last=False)
+    loader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        drop_last=False,
+        collate_fn=lambda samples: collate_and_resize(
+            samples,
+            image_size=args.image_size,
+            depth_size=args.depth_size,
+            spatial_dims=args.spatial_dims,
+        ),
+    )
 
     model_config = {
         "in_channels": args.channels,
@@ -136,7 +180,7 @@ def main() -> None:
     for epoch in range(args.epochs):
         running = 0.0
         for batch_idx, batch in enumerate(loader, start=1):
-            batch = maybe_resize(batch.to(device), args.image_size, args.depth_size, args.spatial_dims)
+            batch = batch.to(device)
             loss, metrics = ardae_score_loss(model, batch, step=step, config=loss_config)
             opt.zero_grad(set_to_none=True)
             loss.backward()

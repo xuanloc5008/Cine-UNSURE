@@ -182,7 +182,8 @@ python scripts/train_score.py \
   --epochs 50 \
   --batch-size 1 \
   --base-channels 32 \
-  --depth 3
+  --depth 3 \
+  --log-every 100
 ```
 
 The filters match the structures:
@@ -200,6 +201,46 @@ and skip masks/static labels:
 *_ED.nii.gz
 *_ES.nii.gz
 *_LA_*.nii.gz
+```
+
+## Optional: Preprocess Frames First
+
+For faster repeated training, cache normalized/resized 3D frames once:
+
+```bash
+export PREPROC_DIR="outputs/preprocessed_cine3d_192x192x16"
+
+python scripts/preprocess_cine_frames.py \
+  --data "$ACDC_TRAIN" "$MM1_TRAIN" "$MNM2_ROOT" \
+  --output "$PREPROC_DIR" \
+  --channels 1 \
+  --time-axis 0 \
+  --frame-layout dhw \
+  --include "*_4d.nii.gz" "*_sa.nii.gz" "*_SA_CINE.nii.gz" \
+  --exclude "._*" "*_gt.nii.gz" "*_ED.nii.gz" "*_ES.nii.gz" "*_LA_*.nii.gz" \
+  --image-size 192 \
+  --depth-size 16 \
+  --dtype float16 \
+  --log-every 500
+```
+
+Then train directly from cached `.pt` frames:
+
+```bash
+python scripts/train_score.py \
+  --data "$PREPROC_DIR" \
+  --preprocessed \
+  --output "$SCORE_CKPT" \
+  --channels 1 \
+  --spatial-dims 3 \
+  --include "*.pt" \
+  --exclude "manifest.json" \
+  --epochs 10 \
+  --batch-size 4 \
+  --base-channels 32 \
+  --depth 3 \
+  --device cuda \
+  --log-every 100
 ```
 
 For a folder of 4D arrays shaped `[H, W, D, T]`, train on every 3D frame:

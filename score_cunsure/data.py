@@ -84,7 +84,8 @@ def load_array(path: str | Path, *, npz_key: str | None = None) -> torch.Tensor:
     if name.endswith((".pt", ".pth")):
         loaded = torch.load(path, map_location="cpu")
         if isinstance(loaded, dict):
-            loaded = loaded[npz_key or sorted(loaded.keys())[0]]
+            key = npz_key or ("frame" if "frame" in loaded else sorted(loaded.keys())[0])
+            loaded = loaded[key]
         return torch.as_tensor(loaded).float()
     if name.endswith((".png", ".jpg", ".jpeg", ".tif", ".tiff")):
         return torch.as_tensor(np.asarray(Image.open(path))).float()
@@ -248,6 +249,45 @@ class FrameFolderDataset(Dataset[torch.Tensor]):
 
     def __getitem__(self, idx: int) -> torch.Tensor:
         return load_frame(self.paths[idx], npz_key=self.npz_key, channels=self.channels, normalize=self.normalize)
+
+
+class TensorFrameDataset(Dataset[torch.Tensor]):
+    """Dataset over cached tensor frames saved as `[C, *spatial]`."""
+
+    def __init__(
+        self,
+        root: str | Path,
+        *,
+        channels: int = 1,
+        npz_key: str | None = None,
+        spatial_dims: int = 3,
+        limit: int | None = None,
+        include_patterns: Sequence[str] | None = None,
+        exclude_patterns: Sequence[str] | None = None,
+    ) -> None:
+        self.root = Path(root)
+        paths = scan_supported_paths(self.root, include_patterns=include_patterns, exclude_patterns=exclude_patterns)
+        self.paths: Sequence[Path] = sorted(paths)
+        if limit is not None:
+            self.paths = self.paths[:limit]
+        if not self.paths:
+            raise FileNotFoundError(f"no cached tensor frame files found under {self.root}")
+        self.channels = channels
+        self.npz_key = npz_key
+        self.spatial_dims = spatial_dims
+
+    def __len__(self) -> int:
+        return len(self.paths)
+
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        return load_frame(
+            self.paths[idx],
+            npz_key=self.npz_key,
+            channels=self.channels,
+            normalize=False,
+            spatial_dims=self.spatial_dims,
+            frame_layout="auto",
+        )
 
 
 class VolumeFrameDataset(Dataset[torch.Tensor]):

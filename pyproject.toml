@@ -35,7 +35,6 @@ all = [
   "SimpleITK",
   "timm",
   "torchvision",
-  "opendatasets",
 ]
 
 medical-io = [
@@ -46,3 +45,6 @@ medical-io = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.setuptools]
+packages = ["score_cunsure"]
