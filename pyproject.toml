@@ -1,0 +1,47 @@
+[project]
+name = "score-cunsure-foundation-compare"
+version = "0.1.0"
+description = "Score-based C-UNSURE observation covariance pushed through CineMA or MedSAM2 encoders."
+requires-python = ">=3.10"
+dependencies = [
+  "torch",
+  "numpy",
+  "pillow",
+  "pyyaml",
+]
+
+[project.optional-dependencies]
+cinema = [
+  "huggingface_hub",
+  "monai",
+  "omegaconf",
+  "safetensors",
+  "timm",
+]
+medsam2 = [
+  "hydra-core",
+  "iopath",
+  "omegaconf",
+  "torchvision",
+]
+all = [
+  "huggingface_hub",
+  "hydra-core",
+  "iopath",
+  "monai",
+  "nibabel",
+  "omegaconf",
+  "safetensors",
+  "SimpleITK",
+  "timm",
+  "torchvision",
+]
+
+medical-io = [
+  "nibabel",
+  "SimpleITK",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

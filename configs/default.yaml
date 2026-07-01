@@ -1,0 +1,35 @@
+# Default settings for score-based C-UNSURE observation covariance.
+
+data:
+  channels: 1
+  spatial_dims: 3
+  image_size: 192
+  depth_size: 16
+  time_axis: -1
+  frame_layout: hwd
+  normalize: true
+
+score:
+  base_channels: 32
+  depth: 3
+  spatial_dims: 3
+  delta_min: 0.001
+  delta_max: 0.1
+
+cunsure:
+  radius: 5
+  n_probes: 32
+  finite_difference_tau: 0.01
+  eps: 0.000001
+  spectral_floor: 0.00000001
+
+cinema:
+  view: sax
+  pool: cls
+  cache_dir:
+
+medsam2:
+  config: configs/sam2.1_hiera_t512.yaml
+  checkpoint:
+  pool: vision_mean
+  volume_pool: mean
