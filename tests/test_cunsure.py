@@ -4,6 +4,7 @@ import torch
 
 from score_cunsure.cunsure import (
     CUNSUREConfig,
+    _centered_kernel_to_full_spectrum,
     estimate_latent_covariance,
     eta_from_score_autocorrelation,
     sample_correlated_noise_like,
@@ -42,6 +43,14 @@ def test_eta_and_sampling_shapes() -> None:
     assert sqrt_spec.shape == (3, 16, 16)
     assert noise.shape == score.shape
     assert torch.isfinite(noise).all()
+
+
+def test_centered_kernel_wraps_negative_lags_when_embedded() -> None:
+    kernel = torch.tensor([3.0, 10.0, 2.0])
+    spectrum = _centered_kernel_to_full_spectrum(kernel, spatial_shape=(8,), eps=0.0)
+    expected_full = torch.tensor([10.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0])
+    expected = torch.fft.fftn(expected_full, dim=(0,)).real
+    torch.testing.assert_close(spectrum, expected)
 
 
 def test_latent_covariance_is_symmetric() -> None:

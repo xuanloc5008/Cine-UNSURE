@@ -84,9 +84,7 @@ Matrix-free finite-difference estimate:
 delta z_k^(s) = [E(I_k + tau_fd n_k^(s)) - E(I_k)] / tau_fd
 
 Sigma_hat_z,k =
-  1 / (S - 1) sum_s
-  (delta z_k^(s) - mean_s delta z_k)
-  (delta z_k^(s) - mean_s delta z_k)^T
+  1 / S sum_s delta z_k^(s) (delta z_k^(s))^T
 ```
 
 The output `Sigma_hat_z,k` replaces the scalar heuristic `sigma_obs^2 I` in the CV-GRU update and the innovation covariance.
@@ -240,6 +238,8 @@ python scripts/train_score.py \
   --base-channels 32 \
   --depth 3 \
   --device cuda \
+  --multi-gpu \
+  --gpu-ids 0,1 \
   --val-fraction 0.05 \
   --augment \
   --log-every 100
@@ -268,6 +268,8 @@ python scripts/train_score.py \
   --base-channels 32 \
   --depth 3 \
   --device cuda \
+  --multi-gpu \
+  --gpu-ids 0,1 \
   --val-fraction 0.05 \
   --augment \
   --resume "$SCORE_CKPT" \
@@ -294,9 +296,13 @@ python scripts/train_score.py \
   --base-channels 32 \
   --depth 3 \
   --device cuda \
+  --multi-gpu \
+  --gpu-ids 0,1 \
   --augment \
   --log-every 100
 ```
+
+`--batch-size` is the global batch size. With `--multi-gpu --gpu-ids 0,1`, `--batch-size 8` is split roughly as 4 samples per GPU.
 
 For a folder of 4D arrays shaped `[H, W, D, T]`, train on every 3D frame:
 
@@ -502,4 +508,4 @@ Use `--mode all` to run both tests in one command. For MedSAM2, replace `--encod
 - CineMA SAX uses true 3D input `[B, 1, 192, 192, 16]`.
 - MedSAM2 encodes the 3D frame slice-wise and aggregates slice latents with `--medsam2-volume-pool`.
 - `n_probes` controls the rank and stability of `Sigma_hat_z`. Use `32` for quick experiments and `64+` for paper-grade estimates.
-- Store low-rank deltas if full `d x d` covariance is too large; `Sigma = D^T D / (S - 1)`.
+- Store low-rank deltas if full `d x d` covariance is too large; default C-UNSURE uses the paper form `Sigma = D^T D / S`.

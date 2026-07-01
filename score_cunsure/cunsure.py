@@ -30,7 +30,8 @@ class CUNSUREConfig:
     spectral_floor: float = 1.0e-8
     n_probes: int = 32
     finite_difference_tau: float = 1.0e-2
-    unbiased_covariance: bool = True
+    unbiased_covariance: bool = False
+    center_deltas: bool = False
     circular_autocorrelation: bool = True
 
 
@@ -134,8 +135,7 @@ def eta_from_score_autocorrelation(h: Tensor, eps: float = 1.0e-6, *, batched: b
 
     h_origin = torch.fft.ifftshift(h, dim=kernel_dims)
     h_spectrum = torch.fft.fftn(h_origin, dim=kernel_dims)
-    inv_spectrum_real = torch.reciprocal(torch.clamp(h_spectrum.real, min=eps))
-    inv_spectrum = torch.complex(inv_spectrum_real, torch.zeros_like(inv_spectrum_real))
+    inv_spectrum = torch.conj(h_spectrum) / (h_spectrum.abs().square() + eps)
     eta_origin = torch.fft.ifftn(inv_spectrum, dim=kernel_dims).real
     eta_centered = torch.fft.fftshift(eta_origin, dim=kernel_dims)
     return eta_centered.squeeze(0) if squeeze_batch else eta_centered
@@ -157,12 +157,13 @@ def _centered_kernel_to_full_spectrum(
             f"for spatial shape {spatial_shape}"
         )
 
-    kernel_dims = _kernel_dim_tuple(kernel)
-    kernel_origin = torch.fft.ifftshift(kernel, dim=kernel_dims)
     full = torch.zeros((kernel.shape[0], *spatial_shape), dtype=kernel.dtype, device=kernel.device)
-    insert = (slice(None), *[slice(0, min(k, s)) for k, s in zip(kernel_origin.shape[1:], spatial_shape, strict=True)])
-    source = (slice(None), *[slice(0, min(k, s)) for k, s in zip(kernel_origin.shape[1:], spatial_shape, strict=True)])
-    full[insert] = kernel_origin[source]
+    kernel_shape = kernel.shape[1:]
+    centers = tuple(k // 2 for k in kernel_shape)
+    for index in product(*[range(k) for k in kernel_shape]):
+        offset = tuple(i - c for i, c in zip(index, centers, strict=True))
+        wrapped = tuple(o % s for o, s in zip(offset, spatial_shape, strict=True))
+        full[(slice(None), *wrapped)] = kernel[(slice(None), *index)]
     full_spectrum = torch.fft.fftn(full, dim=tuple(range(1, full.ndim))).real
     full_spectrum = torch.clamp(full_spectrum, min=eps)
     return full_spectrum.squeeze(0) if squeeze_batch else full_spectrum
@@ -204,7 +205,7 @@ def sample_correlated_noise_like(
     return torch.fft.ifftn(xi_fft * spectrum, dim=spatial_dims).real
 
 
-def covariance_from_deltas(deltas: Tensor, *, unbiased: bool = True) -> Tensor:
+def covariance_from_deltas(deltas: Tensor, *, unbiased: bool = True, center: bool = True) -> Tensor:
     """Compute per-batch covariance from finite-difference latent deltas.
 
     Args:
@@ -216,7 +217,8 @@ def covariance_from_deltas(deltas: Tensor, *, unbiased: bool = True) -> Tensor:
     if deltas.ndim != 3:
         raise ValueError(f"expected deltas [S, B, d], got {tuple(deltas.shape)}")
     samples = deltas.transpose(0, 1)  # [B, S, d]
-    samples = samples - samples.mean(dim=1, keepdim=True)
+    if center:
+        samples = samples - samples.mean(dim=1, keepdim=True)
     denom = max(samples.shape[1] - 1, 1) if unbiased else samples.shape[1]
     cov = samples.transpose(1, 2) @ samples / denom
     return 0.5 * (cov + cov.transpose(-1, -2))
@@ -263,7 +265,11 @@ def estimate_latent_covariance(
             z1 = encoder(image + config.finite_difference_tau * noise).flatten(start_dim=1)
             deltas.append((z1 - z0) / config.finite_difference_tau)
         delta_tensor = torch.stack(deltas, dim=0)
-        covariance = covariance_from_deltas(delta_tensor, unbiased=config.unbiased_covariance)
+        covariance = covariance_from_deltas(
+            delta_tensor,
+            unbiased=config.unbiased_covariance,
+            center=config.center_deltas,
+        )
 
     return LatentCovarianceResult(
         z=z0,

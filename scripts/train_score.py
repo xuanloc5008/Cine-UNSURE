@@ -80,6 +80,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--intensity-jitter", type=float, default=0.05)
     parser.add_argument("--input-noise-std", type=float, default=0.0)
     parser.add_argument("--device", default=default_device())
+    parser.add_argument("--multi-gpu", action="store_true", help="Use torch.nn.DataParallel on all visible CUDA GPUs")
+    parser.add_argument("--gpu-ids", default=None, help='Comma-separated GPU ids for DataParallel, e.g. "0,1"')
     parser.add_argument("--log-every", type=int, default=100, help="Print batch progress every N optimizer steps")
     parser.add_argument("--seed", type=int, default=2026)
     return parser.parse_args()
@@ -251,6 +253,26 @@ def append_metrics(path: Path, row: dict[str, float | int | str]) -> None:
         writer.writerow(row)
 
 
+def parse_gpu_ids(gpu_ids: str | None) -> list[int] | None:
+    if not gpu_ids:
+        return None
+    return [int(item.strip()) for item in gpu_ids.split(",") if item.strip()]
+
+
+def maybe_wrap_multi_gpu(model: ScoreUNet, args: argparse.Namespace, device: torch.device) -> torch.nn.Module:
+    if args.multi_gpu:
+        if device.type != "cuda":
+            raise ValueError("--multi-gpu requires --device cuda")
+        count = torch.cuda.device_count()
+        if count < 2:
+            print(f"--multi-gpu requested but only {count} CUDA device(s) visible; using single GPU")
+            return model
+        device_ids = parse_gpu_ids(args.gpu_ids) or list(range(count))
+        model = torch.nn.DataParallel(model, device_ids=device_ids)
+        print(f"multi_gpu=DataParallel device_ids={device_ids} global_batch_size={args.batch_size}")
+    return model
+
+
 def main() -> None:
     args = parse_args()
     torch.manual_seed(args.seed)
@@ -276,7 +298,6 @@ def main() -> None:
         "spatial_dims": args.spatial_dims,
     }
     model = ScoreUNet(**model_config).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     loss_config = ScoreLossConfig(
         delta_min=args.delta_min,
         delta_max=args.delta_max,
@@ -288,13 +309,19 @@ def main() -> None:
     best_val_loss = float("inf")
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
-        model.load_state_dict(ckpt["model"])
-        if "optimizer" in ckpt:
-            opt.load_state_dict(ckpt["optimizer"])
+        state_dict = ckpt["model"]
+        if any(key.startswith("module.") for key in state_dict):
+            state_dict = {key.removeprefix("module."): value for key, value in state_dict.items()}
+        model.load_state_dict(state_dict)
         step = int(ckpt.get("step", 0))
         start_epoch = int(ckpt.get("epoch", 0)) + 1
         best_val_loss = float(ckpt.get("best_val_loss", best_val_loss))
         print(f"resumed checkpoint={args.resume} start_epoch={start_epoch} step={step} best_val_loss={best_val_loss}")
+
+    model = maybe_wrap_multi_gpu(model, args, device)
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    if args.resume and "ckpt" in locals() and "optimizer" in ckpt:
+        opt.load_state_dict(ckpt["optimizer"])
 
     output = Path(args.output)
     best_output = Path(args.best_output) if args.best_output else output.with_name(f"{output.stem}.best{output.suffix}")

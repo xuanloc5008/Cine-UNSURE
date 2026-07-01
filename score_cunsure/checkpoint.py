@@ -10,9 +10,13 @@ import torch
 from score_cunsure.score_model import ScoreLossConfig, ScoreUNet
 
 
+def unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
+    return model.module if isinstance(model, torch.nn.DataParallel) else model
+
+
 def save_score_checkpoint(
     path: str | Path,
-    model: ScoreUNet,
+    model: torch.nn.Module,
     *,
     model_config: dict[str, Any],
     loss_config: ScoreLossConfig,
@@ -24,8 +28,9 @@ def save_score_checkpoint(
 ) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    unwrapped = unwrap_model(model)
     checkpoint: dict[str, Any] = {
-        "model": model.state_dict(),
+        "model": unwrapped.state_dict(),
         "model_config": model_config,
         "loss_config": loss_config.__dict__,
         "step": step,
@@ -45,6 +50,9 @@ def load_score_checkpoint(path: str | Path, *, device: str | torch.device = "cpu
     ckpt = torch.load(path, map_location=device, weights_only=False)
     model_config = ckpt.get("model_config", {})
     model = ScoreUNet(**model_config).to(device)
-    model.load_state_dict(ckpt["model"])
+    state_dict = ckpt["model"]
+    if any(key.startswith("module.") for key in state_dict):
+        state_dict = {key.removeprefix("module."): value for key, value in state_dict.items()}
+    model.load_state_dict(state_dict)
     model.eval()
     return model, ckpt

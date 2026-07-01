@@ -5,7 +5,7 @@ python scripts/train_score.py \
   --channels 1 \
   --spatial-dims 3 \
   --include "*.pt" \
-  --epochs 50 \
+  --epochs 100 \
   --batch-size 4 \
   --base-channels 32 \
   --depth 3 \

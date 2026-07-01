@@ -1,6 +1,52 @@
-find /workspace/datasets -type f -name '._*' -delete
-find /workspace/datasets -type f -name '.DS_Store' -delete
+find /workspace/datasets \
+    -type f \
+    \( -name '._*' -o -name '.DS_Store' \) \
+    -delete
+# python -m pip uninstall -y opendatasets kaggle kagglesdk
+# python -m pip install "kaggle==1.6.17"
 
+cd /workspace/Cine-UNSURE
+#==============================
+
+python - <<'PY'
+from pathlib import Path
+
+p = Path("pyproject.toml")
+text = p.read_text()
+lines = text.splitlines()
+
+out = []
+seen = False
+skip_next_packages = False
+
+i = 0
+while i < len(lines):
+    line = lines[i].strip()
+    if line == "[tool.setuptools]":
+        if seen:
+            i += 1
+            if i < len(lines) and lines[i].strip().startswith("packages"):
+                i += 1
+            continue
+        seen = True
+        out.append(lines[i])
+        i += 1
+        continue
+    out.append(lines[i])
+    i += 1
+
+text = "\n".join(out).rstrip() + "\n"
+if "[tool.setuptools]" not in text:
+    text += '\n[tool.setuptools]\npackages = ["score_cunsure"]\n'
+elif 'packages = ["score_cunsure"]' not in text:
+    text += '\npackages = ["score_cunsure"]\n'
+
+p.write_text(text)
+PY
+
+python -m pip install -e ".[all]"
+
+#==============================
 printf '\n[tool.setuptools]\npackages = ["score_cunsure"]\n' >> pyproject.toml
 python -m pip install -e ".[all]"
 
