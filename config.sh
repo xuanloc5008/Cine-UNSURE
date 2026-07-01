@@ -1,0 +1,6 @@
+export ACDC_TRAIN="/workspace/datasets/acdcdata/ACDC/database/training"
+export MM1_TRAIN="/workspace/datasets/mm1-data/M&M1/Training"
+export MM1_VAL="/workspace/datasets/mm1-data/M&M1/Validation"
+export MNM2_ROOT="/workspace/datasets/m-and-m-candy/MnM2/dataset"
+export SCORE_CKPT="/workspace/Cine-UNSURE/outputs/score_unet_cine3d.pt"
+export PREPROC_DIR="/workspace/Cine-UNSURE/outputs/preprocessed_cine3d_192x192x16"

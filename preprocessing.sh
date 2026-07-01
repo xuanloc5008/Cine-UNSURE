@@ -1,0 +1,12 @@
+python scripts/preprocess_cine_frames.py \
+  --data "$ACDC_TRAIN" "$MM1_TRAIN" "$MNM2_ROOT" \
+  --output "$PREPROC_DIR" \
+  --channels 1 \
+  --time-axis 0 \
+  --frame-layout dhw \
+  --include "*_4d.nii.gz" "*_sa.nii.gz" "*_SA_CINE.nii.gz" \
+  --exclude "._*" "*_gt.nii.gz" "*_ED.nii.gz" "*_ES.nii.gz" "*_LA_*.nii.gz" \
+  --image-size 192 \
+  --depth-size 16 \
+  --dtype float16 \
+  --log-every 500

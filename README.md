@@ -240,6 +240,61 @@ python scripts/train_score.py \
   --base-channels 32 \
   --depth 3 \
   --device cuda \
+  --val-fraction 0.05 \
+  --augment \
+  --log-every 100
+```
+
+This writes:
+
+```text
+outputs/score_unet_cine3d.pt          # last checkpoint
+outputs/score_unet_cine3d.best.pt     # best validation checkpoint
+outputs/score_unet_cine3d.metrics.csv # per-epoch train/val loss
+```
+
+Resume training from the last checkpoint:
+
+```bash
+python scripts/train_score.py \
+  --data "$PREPROC_DIR" \
+  --preprocessed \
+  --output "$SCORE_CKPT" \
+  --channels 1 \
+  --spatial-dims 3 \
+  --include "*.pt" \
+  --epochs 20 \
+  --batch-size 4 \
+  --base-channels 32 \
+  --depth 3 \
+  --device cuda \
+  --val-fraction 0.05 \
+  --augment \
+  --resume "$SCORE_CKPT" \
+  --log-every 100
+```
+
+If you want to reserve M&M1 validation as explicit validation data:
+
+```bash
+python scripts/train_score.py \
+  --data "$ACDC_TRAIN" "$MM1_TRAIN" "$MNM2_ROOT" \
+  --val-data "$MM1_VAL" \
+  --output "$SCORE_CKPT" \
+  --channels 1 \
+  --spatial-dims 3 \
+  --time-axis 0 \
+  --frame-layout dhw \
+  --include "*_4d.nii.gz" "*_sa.nii.gz" "*_SA_CINE.nii.gz" \
+  --exclude "._*" "*_gt.nii.gz" "*_ED.nii.gz" "*_ES.nii.gz" "*_LA_*.nii.gz" \
+  --image-size 192 \
+  --depth-size 16 \
+  --epochs 10 \
+  --batch-size 4 \
+  --base-channels 32 \
+  --depth 3 \
+  --device cuda \
+  --augment \
   --log-every 100
 ```
 
