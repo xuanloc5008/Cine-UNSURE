@@ -1,0 +1,31 @@
+seed: 2026
+
+data:
+  train_output: data/processed/train_cunsure.h5
+  val_output: data/processed/val_cunsure.h5
+  channels: 1
+  volume_size: [16, 128, 128]
+  train_limit:
+  val_limit:
+  normalize: percentile
+  percentile_low: 1.0
+  percentile_high: 99.0
+  split_4d: true
+  time_axis: -1
+  exclude_substrings:
+    - _gt
+    - gt.nii
+    - label
+    - seg
+
+  train_globs:
+    - ../ACDC/database/training/patient*/patient*_4d.nii.gz
+    - ../ACDC/database/training/patient*/patient*_frame*.nii.gz
+    - ../M&M1/Training/Labeled/*/*_sa.nii.gz
+    - ../M&M1/Training/Unlabeled/*/*_sa.nii.gz
+    - ../MnM2/dataset/*/*_SA_CINE.nii.gz
+
+  val_globs:
+    - ../ACDC/database/testing/patient*/patient*_4d.nii.gz
+    - ../M&M1/Validation/*/*_sa.nii.gz
+    - ../MnM2/dataset/*/*_SA_CINE.nii.gz

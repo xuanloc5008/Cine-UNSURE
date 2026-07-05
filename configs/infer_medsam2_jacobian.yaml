@@ -1,0 +1,21 @@
+seed: 2026
+device: cuda
+
+input:
+  image: ../ACDC/database/testing/patient107/patient107_4d.nii.gz
+  time_index:
+  output_dir: outputs/medsam2_jacobian
+
+cunsure:
+  checkpoint: runs/cunsure_monai3d/best.pt
+
+foundation:
+  name: medsam2
+  repo_path: ../MedSAM2
+  config_name: configs/sam2.1_hiera_t512.yaml
+  checkpoint: ../MedSAM2/checkpoints/MedSAM2_latest.pt
+  pool: vision_mean
+
+jacobian:
+  chunk_size: 4
+  save_jacobian: true
