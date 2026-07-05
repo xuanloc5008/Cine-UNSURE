@@ -8,6 +8,7 @@ data:
   train_limit:
   val_limit:
   normalize: percentile
+  compression: lzf
   percentile_low: 1.0
   percentile_high: 99.0
   split_4d: true
@@ -17,15 +18,13 @@ data:
     - gt.nii
     - label
     - seg
-
   train_globs:
-    - ../ACDC/database/training/patient*/patient*_4d.nii.gz
-    - ../ACDC/database/training/patient*/patient*_frame*.nii.gz
-    - ../M&M1/Training/Labeled/*/*_sa.nii.gz
-    - ../M&M1/Training/Unlabeled/*/*_sa.nii.gz
-    - ../MnM2/dataset/*/*_SA_CINE.nii.gz
+    - datasets/ACDC/database/training/patient*/patient*_4d.nii.gz
+    - datasets/M&M1/Training/Labeled/*/*_sa.nii.gz
+    - datasets/M&M1/Training/Unlabeled/*/*_sa.nii.gz
+    - datasets/MnM2/dataset/*/*_SA_CINE.nii.gz
 
   val_globs:
-    - ../ACDC/database/testing/patient*/patient*_4d.nii.gz
-    - ../M&M1/Validation/*/*_sa.nii.gz
-    - ../MnM2/dataset/*/*_SA_CINE.nii.gz
+    - datasets/ACDC/database/testing/patient*/patient*_4d.nii.gz
+    - datasets/M&M1/Validation/*/*_sa.nii.gz
+    - datasets/MnM2/dataset/*/*_SA_CINE.nii.gz

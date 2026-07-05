@@ -36,6 +36,8 @@ def main() -> None:
         split_4d=bool(data["split_4d"]),
         time_axis=int(data["time_axis"]),
     )
+    print(f"found train frames: {len(train_refs)}")
+    print(f"found val frames: {len(val_refs)}")
 
     write_hdf5(
         train_refs,
@@ -47,6 +49,7 @@ def main() -> None:
         percentile_high=float(data["percentile_high"]),
         time_axis=int(data["time_axis"]),
         limit=data.get("train_limit"),
+        compression=data.get("compression", "lzf"),
     )
     write_hdf5(
         val_refs,
@@ -58,6 +61,7 @@ def main() -> None:
         percentile_high=float(data["percentile_high"]),
         time_axis=int(data["time_axis"]),
         limit=data.get("val_limit"),
+        compression=data.get("compression", "lzf"),
     )
 
 

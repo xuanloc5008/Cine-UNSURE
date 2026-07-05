@@ -1,0 +1,10 @@
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Processed datasets
+data/processed/
+*.h5
+*.hdf5

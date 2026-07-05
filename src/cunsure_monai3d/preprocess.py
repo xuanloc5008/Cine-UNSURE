@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from glob import glob
+from itertools import groupby
 from pathlib import Path
 
 import h5py
@@ -25,7 +27,9 @@ def scan_nifti_frames(
 ) -> list[FrameRef]:
     refs: list[FrameRef] = []
     for pattern in globs:
-        for path in sorted(root.glob(pattern)):
+        search_pattern = str(root / pattern)
+        for path_str in sorted(glob(search_pattern, recursive=True)):
+            path = Path(path_str)
             name = path.name.lower()
             if any(token.lower() in name for token in exclude_substrings):
                 continue
@@ -42,14 +46,18 @@ def scan_nifti_frames(
 
 def load_frame(ref: FrameRef, *, time_axis: int) -> np.ndarray:
     arr = np.asarray(nib.load(str(ref.path)).get_fdata(dtype=np.float32))
-    if ref.time_index is not None:
+    return extract_frame_array(arr, ref.time_index, time_axis=time_axis, path=ref.path)
+
+
+def extract_frame_array(arr: np.ndarray, time_index: int | None, *, time_axis: int, path: Path) -> np.ndarray:
+    if time_index is not None:
         axis = time_axis if time_axis >= 0 else arr.ndim + time_axis
-        arr = np.take(arr, ref.time_index, axis=axis)
+        arr = np.take(arr, time_index, axis=axis)
     arr = np.squeeze(arr)
     if arr.ndim == 2:
         arr = arr[..., None]
     if arr.ndim != 3:
-        raise ValueError(f"expected 3D frame after time extraction, got {arr.shape} from {ref.path}")
+        raise ValueError(f"expected 3D frame after time extraction, got {arr.shape} from {path}")
     arr = np.moveaxis(arr, -1, 0)  # [D,H,W]
     arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
     return arr.astype(np.float32, copy=False)
@@ -102,6 +110,7 @@ def write_hdf5(
     percentile_high: float,
     time_axis: int,
     limit: int | None,
+    compression: str | None = "lzf",
 ) -> None:
     if limit is not None:
         refs = refs[:limit]
@@ -110,33 +119,45 @@ def write_hdf5(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with h5py.File(output_path, "w") as h5:
+        compression_kwargs = {}
+        if compression and compression != "none":
+            compression_kwargs["compression"] = compression
+            if compression == "gzip":
+                compression_kwargs["compression_opts"] = 1
         y = h5.create_dataset(
             "y",
             shape=(len(refs), channels, *volume_size),
             dtype="float32",
             chunks=(1, channels, *volume_size),
-            compression="gzip",
-            compression_opts=4,
+            **compression_kwargs,
         )
         paths = h5.create_dataset("source_path", shape=(len(refs),), dtype=h5py.string_dtype())
         times = h5.create_dataset("time_index", shape=(len(refs),), dtype="int32")
 
-        for idx, ref in enumerate(tqdm(refs, desc=f"writing {output_path}")):
-            vol = load_frame(ref, time_axis=time_axis)
-            vol = normalize_volume(
-                vol,
-                mode=normalize,
-                percentile_low=percentile_low,
-                percentile_high=percentile_high,
-            )
-            vol = center_crop_or_pad(vol, volume_size)
-            if channels == 1:
-                sample = vol[None]
-            else:
-                sample = np.repeat(vol[None], channels, axis=0)
-            y[idx] = sample.astype(np.float32)
-            paths[idx] = str(ref.path)
-            times[idx] = -1 if ref.time_index is None else int(ref.time_index)
+        idx = 0
+        refs_sorted = sorted(refs, key=lambda item: str(item.path))
+        progress = tqdm(total=len(refs_sorted), desc=f"writing {output_path}")
+        for path, group in groupby(refs_sorted, key=lambda item: item.path):
+            arr = np.asarray(nib.load(str(path)).get_fdata(dtype=np.float32))
+            for ref in group:
+                vol = extract_frame_array(arr, ref.time_index, time_axis=time_axis, path=path)
+                vol = normalize_volume(
+                    vol,
+                    mode=normalize,
+                    percentile_low=percentile_low,
+                    percentile_high=percentile_high,
+                )
+                vol = center_crop_or_pad(vol, volume_size)
+                if channels == 1:
+                    sample = vol[None]
+                else:
+                    sample = np.repeat(vol[None], channels, axis=0)
+                y[idx] = sample.astype(np.float32)
+                paths[idx] = str(ref.path)
+                times[idx] = -1 if ref.time_index is None else int(ref.time_index)
+                idx += 1
+                progress.update(1)
+        progress.close()
 
         h5.attrs["volume_size"] = volume_size
         h5.attrs["channels"] = channels
