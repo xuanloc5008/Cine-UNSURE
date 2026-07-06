@@ -50,6 +50,8 @@ class MinimaxCUNSURE3DLoss(nn.Module):
         tau: float,
         eta_step_size: float,
         eta_momentum: float,
+        eta_grad_clip: float | None,
+        eta_max_norm: float | None,
         device: torch.device,
     ) -> None:
         super().__init__()
@@ -61,6 +63,8 @@ class MinimaxCUNSURE3DLoss(nn.Module):
         self.tau = float(tau)
         self.eta_step_size = float(eta_step_size)
         self.eta_momentum = float(eta_momentum)
+        self.eta_grad_clip = None if eta_grad_clip is None else float(eta_grad_clip)
+        self.eta_max_norm = None if eta_max_norm is None else float(eta_max_norm)
         self.register_buffer("eta_grad_momentum", torch.zeros_like(eta), persistent=True)
         self._has_momentum = False
 
@@ -83,12 +87,18 @@ class MinimaxCUNSURE3DLoss(nn.Module):
 
     @torch.no_grad()
     def ascend_eta(self, grad: torch.Tensor) -> None:
+        if self.eta_grad_clip is not None:
+            grad = grad.clamp(min=-self.eta_grad_clip, max=self.eta_grad_clip)
         if not self._has_momentum:
             self.eta_grad_momentum.copy_(grad)
             self._has_momentum = True
         else:
             self.eta_grad_momentum.mul_(self.eta_momentum).add_(grad, alpha=1.0 - self.eta_momentum)
         self.eta.add_(self.eta_grad_momentum, alpha=self.eta_step_size)
+        if self.eta_max_norm is not None:
+            eta_norm = self.eta.norm()
+            if eta_norm > self.eta_max_norm:
+                self.eta.mul_(self.eta_max_norm / eta_norm.clamp_min(1.0e-12))
 
     def apply_sigma_img(self, volume: torch.Tensor) -> torch.Tensor:
         return circular_conv3d_depthwise(volume, self.eta)

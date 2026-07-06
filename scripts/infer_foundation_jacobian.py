@@ -11,7 +11,14 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cunsure_monai3d.config import load_yaml, project_root, resolve_path
-from cunsure_monai3d.foundation import build_foundation, full_jacobian_rows, latent_covariance_from_full_jacobian
+from cunsure_monai3d.foundation import (
+    build_foundation,
+    covariance_sanity_metrics,
+    full_jacobian_rows,
+    latent_covariance_from_full_jacobian,
+    project_covariance_psd,
+    symmetrize_covariance,
+)
 from cunsure_monai3d.preprocess import FrameRef, center_crop_or_pad, load_frame, normalize_volume
 
 
@@ -59,6 +66,8 @@ def main() -> None:
         eta=eta,
         device=device,
     )
+    sigma_z_sym = symmetrize_covariance(sigma_z)
+    sigma_z_psd = project_covariance_psd(sigma_z_sym)
 
     out_dir = resolve_path(cfg["input"]["output_dir"], root)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -66,6 +75,8 @@ def main() -> None:
         "z": z,
         "eta": eta.detach().cpu(),
         "latent_covariance": sigma_z,
+        "latent_covariance_sym": sigma_z_sym,
+        "latent_covariance_psd": sigma_z_psd,
         "image_shape": tuple(x.shape),
         "config": cfg,
     }
@@ -76,7 +87,9 @@ def main() -> None:
         "latent_dim": int(z.numel()),
         "jacobian_shape": list(jac.shape),
         "covariance_shape": list(sigma_z.shape),
-        "covariance_trace": float(torch.trace(sigma_z)),
+        "covariance": covariance_sanity_metrics(sigma_z),
+        "covariance_sym": covariance_sanity_metrics(sigma_z_sym),
+        "covariance_psd": covariance_sanity_metrics(sigma_z_psd),
     }
     with (out_dir / "metrics.json").open("w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)

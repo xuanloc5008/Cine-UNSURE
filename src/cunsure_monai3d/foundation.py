@@ -201,3 +201,28 @@ def latent_covariance_from_full_jacobian(
         sigma_j_rows.append(sigma_block)
     sigma_j = torch.cat(sigma_j_rows, dim=0)
     return (j @ sigma_j.T).detach().cpu()
+
+
+def symmetrize_covariance(covariance: torch.Tensor) -> torch.Tensor:
+    return 0.5 * (covariance + covariance.T)
+
+
+def project_covariance_psd(covariance: torch.Tensor, *, eigenvalue_floor: float = 0.0) -> torch.Tensor:
+    covariance = symmetrize_covariance(covariance)
+    evals, evecs = torch.linalg.eigh(covariance)
+    evals = evals.clamp_min(float(eigenvalue_floor))
+    return (evecs * evals) @ evecs.T
+
+
+def covariance_sanity_metrics(covariance: torch.Tensor) -> dict[str, float]:
+    covariance = covariance.detach().cpu()
+    evals = torch.linalg.eigvalsh(symmetrize_covariance(covariance))
+    diag = covariance.diag()
+    return {
+        "symmetric_error": float((covariance - covariance.T).abs().max()),
+        "diag_min": float(diag.min()),
+        "diag_max": float(diag.max()),
+        "trace": float(torch.trace(covariance)),
+        "eig_min": float(evals.min()),
+        "eig_max": float(evals.max()),
+    }

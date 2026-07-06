@@ -4,8 +4,8 @@ device: cuda
 data:
   train_h5: data/processed/train_cunsure.h5
   val_h5: data/processed/val_cunsure.h5
-  batch_size: 1
-  num_workers: 2
+  batch_size: 8
+  num_workers: 18
 
 model:
   in_channels: 1
@@ -17,9 +17,12 @@ model:
 loss:
   kernel_size: 3
   tau: 0.01
-  eta_init: 0.1
-  eta_step_size: 0.01
+  eta_init: 0.001
+  eta_step_size: 0.000001
   eta_momentum: 0.9
+  eta_update_every: 100
+  eta_grad_clip: 0.001
+  eta_max_norm: 0.0005
 
 optim:
   epochs: 100
@@ -29,3 +32,5 @@ optim:
 output:
   run_dir: runs/cunsure_monai3d
   checkpoint_every: 10
+  best_divergence_ratio: 0.3
+  best_max_residual: 0.005
