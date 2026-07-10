@@ -1,0 +1,39 @@
+seed: 2026
+device: auto
+
+data:
+  h5: runs/selected/latent_observations_cinema_cunsure_mc.h5
+  sequence_index: runs/selected/sde_sequence_index.jsonl
+  min_length: 2
+  covariance: diag
+  normalize_time: true
+
+model:
+  hidden_dim: 128
+  mlp_hidden_dim: 256
+  mlp_layers: 2
+  process_noise_floor: 0.000001
+  init_covariance: 0.000001
+  calibration_lambda: 0.05
+  covariance_grad: false
+  jacobian_vectorize: false
+  innovation_mode: diag
+  deformation_shape: [16, 32, 32]
+  deformation_covariance: diag
+  deformation_jacobian_chunk: 512
+  deformation_scale: 4.0
+  zero_init_deformation: true
+
+loss:
+  name: nll
+  jitter: 0.000001
+
+optim:
+  epochs: 50
+  lr: 0.0001
+  weight_decay: 0.0001
+  grad_clip: 1.0
+
+output:
+  run_dir: runs/draft_sde_rnn
+  checkpoint_every: 10

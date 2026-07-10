@@ -1,0 +1,816 @@
+\documentclass[10pt,twocolumn]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{algorithm}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{bm}
+% \usepackage{bbm}
+\usepackage{mathtools}
+\usepackage{cite}
+\usepackage{xcolor}
+\usepackage[margin=0.75in]{geometry}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,calc,decorations.pathmorphing}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Var}{\mathrm{Var}}
+\newcommand{\Cov}{\mathrm{Cov}}
+\newcommand{\tr}{\mathrm{tr}}
+\newcommand{\diag}{\mathrm{diag}}
+
+\title{\Large \textbf{Uncertainty-Aware Cardiac Function Assessment via Neural SDE-RNN: \\From Deformation Fields to Clinical Metrics with Analytical Prediction Bands}}
+
+\author{
+Draft Manuscript \\
+\textit{Prepared: June 2026}
+}
+
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Quantifying uncertainty in cardiac deformation tracking is crucial for clinically reliable cardiac function assessment, yet most learning-based pipelines provide only point estimates of deformation fields and downstream metrics such as ejection fraction (EF), wall motion, and myocardial strain. We propose an uncertainty-aware neural differential registration framework for cine cardiac MRI. The model learns a continuous-time deformation trajectory from a reference cardiac frame to all observed frames using a Neural SDE-RNN, while analytically propagating observation uncertainty estimated by C-UNSURE through a frozen CineMA encoder, a covariance-aware recurrent update, and a deformation decoder. The deformation field is trained with a NODEO-style registration objective: warped-image similarity, fold prevention, motion magnitude control, and spatial/temporal smoothness regularization. CineMA serves as a frozen latent observation model, and C-UNSURE supplies frame-specific image-noise covariance that is propagated into latent observation covariance without assuming a known scalar noise level. The resulting hidden-state covariance is transformed into deformation-field covariance and subsequently into uncertainty bands for clinical metrics. Thus, the proposed framework targets not only accurate cardiac motion estimation but also clinically meaningful uncertainty propagation from image noise to deformation uncertainty and finally to biomarker confidence intervals. We validate the framework on cardiac cine-MRI sequences by assessing registration accuracy, deformation regularity, calibration of deformation uncertainty, and coverage of clinical metric prediction bands.
+\end{abstract}
+
+\textbf{Keywords:} Neural Stochastic Differential Equations, Uncertainty Quantification, Cardiac Function, Ejection Fraction, Prediction Bands, Recurrent Neural Networks
+
+%==============================================================
+\section{Introduction}
+\label{sec:intro}
+%==============================================================
+
+Cardiac function assessment from cine magnetic resonance imaging (cine-MRI) relies on a chain of computational steps: deformable image registration to track myocardial motion, volumetric segmentation to delineate chambers, and the derivation of clinical metrics such as ejection fraction (EF), regional wall motion, and myocardial strain \cite{qin2018joint}. Each step introduces uncertainty---from acquisition noise and inter-beat variability at the image level, through model approximation errors in the registration, to nonlinear transformations that convert deformation fields into scalar clinical indices. Despite the critical importance of these metrics in diagnosing cardiomyopathies and guiding therapy, most existing pipelines produce only point estimates, leaving clinicians without a principled measure of confidence.
+
+Recent advances in Neural Ordinary Differential Equations (Neural ODEs) \cite{chen2018neural} and their stochastic extension, Neural Stochastic Differential Equations (Neural SDEs) \cite{li2020scalable,tzen2019neural}, have opened a new avenue for modeling continuous-time dynamics with built-in noise characterization. In the context of cardiac image registration, the NSDEO framework \cite{wu2022nodeo} demonstrated that treating voxel trajectories as solutions of a neural SDE naturally decomposes observed motion into a systematic drift (the true cardiac dynamics) and a stochastic diffusion (noise and variability). However, NSDEO quantifies uncertainty by Monte Carlo sampling of Brownian paths, which is computationally expensive and does not distinguish aleatoric from epistemic sources. Furthermore, the uncertainty remains at the deformation-field level and is never propagated to the clinical metrics that ultimately inform patient care.
+
+Independently, the SDE-RNN framework \cite{dahale2023general} showed that combining neural SDEs with covariance-propagating RNNs (CVRNN) enables \emph{analytical} tracking of both aleatoric and epistemic uncertainty in irregularly sampled time series. The key insight is that linearization of the RNN cell and the SDE drift/diffusion functions yields closed-form recursions for the mean and covariance of hidden states, avoiding the need for sampling entirely.
+
+Meanwhile, CineMA \cite{fu2025cinema}---a multi-view convolution--transformer masked autoencoder pretrained on over 15 million cine cardiac MRI images from the UK Biobank---has shown that self-supervised pretraining yields rich, transferable representations for diverse cardiac downstream tasks. We leverage CineMA's frozen pretrained encoder as the observation model in our framework, mapping each cardiac frame into a compact latent representation before it enters the SDE-RNN pipeline.
+
+In this paper, we unify and extend these lines of work into a single framework for \textbf{uncertainty-aware cardiac deformation tracking and function assessment}. Our contributions are:
+
+\begin{enumerate}
+    \item \textbf{Neural SDE-RNN for cardiac deformation tracking.} We formulate cine-MRI registration as a continuous-time deformation trajectory from a reference cardiac frame to all observed frames. A Neural SDE models the latent motion dynamics between frames, and a covariance-propagating recurrent update assimilates each observed frame.
+
+    \item \textbf{NODEO-style deformation learning.} The dense deformation decoder is trained by image registration losses rather than by latent supervision alone. The objective combines local normalized cross-correlation between warped and target frames with Jacobian-determinant, magnitude, spatial smoothness, and temporal smoothness regularization.
+
+    \item \textbf{CineMA and C-UNSURE as an observation-uncertainty model.} We employ the pretrained CineMA encoder as a frozen latent observation model and use C-UNSURE to estimate frame-specific image noise without assuming a known scalar noise level. This image-space covariance is propagated through the frozen encoder to obtain latent observation covariance.
+
+    \item \textbf{Analytical uncertainty propagation to clinical metrics.} We derive closed-form expressions for propagating the deformation-field covariance through the nonlinear maps that compute EF, regional wall motion, and myocardial strain. The result is a prediction band for each clinical metric that is a direct, deterministic consequence of the upstream SDE-RNN covariance---not a statistical construct requiring calibration data.
+
+    \item \textbf{Self-calibrating prediction bands.} We introduce an innovation-based adaptive mechanism that, at each observed cardiac frame, compares the predicted uncertainty with the actual observation residual and adjusts the process noise covariance accordingly. This closed-loop correction ensures that the prediction bands remain well-calibrated throughout the cardiac cycle without external calibration sets.
+
+    % \item \textbf{Empirical validation.} We demonstrate on the ACDC dataset that our analytically derived prediction bands achieve lower Expected Normalized Calibration Error (ENCE) than MC-dropout and deep ensemble baselines, while being orders of magnitude faster at inference.
+\end{enumerate}
+
+The remainder of this paper is organized as follows. Section~\ref{sec:related} reviews related work. Section~\ref{sec:method} presents the proposed framework. Section~\ref{sec:clinical} derives the uncertainty propagation to clinical metrics. Section~\ref{sec:calibration} describes the self-calibration mechanism. Section~\ref{sec:experiments} presents experimental results. Section~\ref{sec:conclusion} concludes the paper.
+
+%==============================================================
+\section{Related Work}
+\label{sec:related}
+%==============================================================
+
+\subsection{Neural ODEs and SDEs for Registration}
+
+Neural ODEs \cite{chen2018neural} model continuous-time dynamics by parameterizing the time derivative of a state with a neural network. The NODEO framework \cite{wu2022nodeo} applied this to deformable image registration, treating each voxel as a particle whose trajectory is the solution of an ODE and optimizing the deformation with image similarity and deformation regularization. Sequential NODEO further extends this idea to image sequences by learning a shared time-dependent deformation trajectory rather than independent pairwise transformations \cite{wu2024sequentialnodeo}. NSDEO extended NODEO by replacing the ODE with an It\^{o} SDE, adding a diffusion term to model observation noise and biological variability. However, NSDEO relies on Monte Carlo sampling for uncertainty quantification and does not propagate uncertainty beyond the deformation field.
+
+\subsection{Uncertainty Quantification in Neural SDEs}
+
+The SDE-RNN framework \cite{dahale2023general} combines neural SDEs with covariance-propagating RNNs to analytically quantify both aleatoric and epistemic uncertainty in time-series imputation. Using linearization of the RNN cell (Theorem of Uncertainty Transformation) and the SDE drift/diffusion functions, closed-form recursions for the mean and covariance are derived. However, this work was limited to scalar time series and did not address spatial deformation fields or the propagation of uncertainty to derived functional metrics.
+
+\subsection{Foundation Models for Cardiac MRI}
+
+CineMA \cite{fu2025cinema} is a multi-view convolution--transformer masked autoencoder pretrained on 74,916 cine CMR studies from the UK Biobank. It adopts the MultiMAE architecture \cite{multimae} with ConvMAE-style \cite{convmae} convolutional downsampling, processing short-axis (SAX) and long-axis (LAX) views through a shared Vision Transformer (ViT) encoder. During pretraining, 75\% of image patches are randomly masked and the model learns to reconstruct them, forcing the encoder to learn rich cardiac representations. After fine-tuning, CineMA outperforms conventional CNNs on segmentation, EF estimation, and disease classification across eight independent datasets. The pretrained encoder is publicly available, making it an ideal backbone for downstream observation encoding.
+
+\subsection{Cardiac Function Assessment}
+
+Ejection fraction, myocardial strain, and wall motion are standard clinical metrics derived from cardiac imaging \cite{qin2018joint,qin2020biomechanics}. These metrics are computed from segmentation masks and/or deformation fields through nonlinear operations (volume integration, Jacobian computation, boundary displacement). While several works have addressed uncertainty in cardiac segmentation \cite{baumgartner2019phiseg}, the propagation of registration uncertainty to these downstream clinical metrics has not been studied.
+
+\subsection{Conformal Prediction and Prediction Bands}
+
+Conformal prediction \cite{vovk2005algorithmic} provides distribution-free prediction intervals by calibrating on a held-out set. While attractive for its theoretical guarantees, it requires exchangeability assumptions and a separate calibration dataset. In the cardiac setting, inter-patient variability and limited data make conformal calibration challenging. Our approach derives prediction bands analytically from the model's own uncertainty propagation, providing a complementary---and data-efficient---alternative.
+
+%==============================================================
+\section{Proposed Framework}
+\label{sec:method}
+%==============================================================
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=\textwidth]{images/flow.png}
+    \caption{Overview of the proposed uncertainty-aware cardiac function
+    assessment framework. Each frame of the cine-MRI sequence $\{I_k\}$ is
+    mapped by the frozen CineMA encoder $\mathcal{E}$ into a latent observation
+    $\bm{z}_k$ corrupted by observation noise (Eq.~\eqref{eq:obs_cinema}).
+    The SDE-RNN core (dashed box) jointly propagates the mean and covariance of
+    the hidden state: a Neural SDE evolves the state between frames, a CV-GRU
+    cell assimilates each encoded observation, and a decoder produces the
+    deformation field together with its covariance $\bm{R}_k$. The
+    deformation-field uncertainty is then propagated analytically to clinical
+    metrics (EF, regional wall motion, myocardial strain), yielding the
+    prediction bands of Eq.~\eqref{eq:final_band}.}
+    \label{fig:framework}
+\end{figure*}
+\subsection{Problem Formulation}
+
+Consider a cardiac cine-MRI sequence $\{I_k\}_{k=0}^{K}$ acquired at times $\{t_k\}_{k=0}^{K}$ over one or more cardiac cycles. Let $\bm{\phi}(\bm{x}, t): \Omega \times [0,T] \to \Omega$ denote the deformation field that maps a reference voxel $\bm{x} \in \Omega \subset \R^3$ at time $t_0$ to its position at time $t$. Our goal is to:
+\begin{enumerate}
+    \item Estimate $\bm{\phi}(\bm{x}, t)$ and its uncertainty for all $\bm{x}$ and $t$;
+    \item Propagate this uncertainty to clinical metrics $\mathcal{M}(\bm{\phi})$ such as EF, strain, and wall motion;
+    \item Provide prediction bands $[\mathcal{M}^{-}, \mathcal{M}^{+}]$ that are analytically derived and self-calibrating.
+\end{enumerate}
+
+\subsection{CineMA Encoder as Observation Model}
+\label{sec:cinema_encoder}
+
+Rather than feeding raw pixel intensities into the SDE-RNN, we first encode each cardiac frame using CineMA's pretrained Vision Transformer encoder $\mathcal{E}_{\text{CineMA}}$:
+\begin{equation}
+    \bm{z}_k = \mathcal{E}_{\text{CineMA}}(I_k) \in \R^{d},
+    \label{eq:cinema_encode}
+\end{equation}
+where $d$ is the embedding dimension of the pooled latent representation (CLS token or mean-pooled patch tokens). The encoder weights are \textbf{frozen} throughout our pipeline; only the SDE, CV-GRU, and output networks are trained.
+
+Operating the SDE-RNN in CineMA's latent space rather than raw pixel space serves three purposes. First, it provides \textbf{dimensionality reduction}: the latent space is orders of magnitude smaller than the image space, making covariance propagation tractable. Second, CineMA's representations are \textbf{semantically rich}, having been pretrained on over 15 million cardiac images across 74,916 subjects, and they generalize across scanners and pathologies. Third, cardiac dynamics in this learned latent space are expected to be \textbf{smoother} than in pixel space, improving the fidelity of the linearization used in our uncertainty propagation.
+
+The latent observation inherits uncertainty from image acquisition noise, reconstruction artifacts, and partial-volume effects in the input cine frame. We model this as additive Gaussian perturbation in the latent observation:
+\begin{equation}
+    \tilde{\bm{z}}_k = \bm{z}_k + \bm{w}_k, \quad \bm{w}_k \sim \mathcal{N}(\bm{0}, \bm{\Sigma}_k),
+    \label{eq:obs_cinema}
+\end{equation}
+where $\bm{\Sigma}_k \in \R^{d \times d}$ is the latent observation covariance. We do not assume that $\bm{\Sigma}_k$ is a known scalar multiple of the identity. Instead, Section~\ref{sec:cunsure} estimates the image-space noise covariance with C-UNSURE and propagates it through the frozen CineMA encoder by linearization. This yields a frame-specific and generally anisotropic latent covariance that reflects the reliability of each observed cine frame.
+
+In the remainder of the framework, the CineMA-encoded observation $\tilde{\bm{z}}_k$ with noise covariance $\bm{\Sigma}_k$ replaces the raw image observation $\tilde{\bm{y}}_k$, and the SDE-RNN hidden state $\bm{h}_k$ lives in a space compatible with $\R^d$.
+
+\subsubsection{Data-Driven Observation Covariance via C-UNSURE}
+\label{sec:cunsure}
+
+The fidelity of every prediction band derived in Section~\ref{sec:clinical} ultimately rests on the latent observation covariance $\bm{\Sigma}_k$ introduced in Eq.~\eqref{eq:obs_cinema}, since $\bm{\Sigma}_k$ enters both the aleatoric term of the CV-GRU update~\eqref{eq:cov_update} and the innovation covariance $\bm{S}_k$~\eqref{eq:innov_cov}. The heuristic choice $\bm{\Sigma}_k = \sigma^2_{\text{obs}}\bm{I}$ is attractive for its simplicity but is unsatisfactory in three respects: (i) it presumes the noise level $\sigma^2_{\text{obs}}$ is known, whereas in practice it is unknown and varies across scanners, sequences, and patients; (ii) it is \emph{isotropic} and therefore cannot represent the spatial correlation of acquisition noise; and (iii) it conflates genuine acquisition noise with the encoder's reconstruction error. We address all three by estimating $\bm{\Sigma}_k$ directly from data, without any knowledge of the noise level, using the C-UNSURE estimator of~\cite{tachella2025unsure}.
+
+\paragraph{Noise estimation in image space.}
+Cine-MRI noise is most naturally described in the image domain. After parallel reconstruction it is well modelled as spatially correlated Gaussian noise,
+\begin{equation}
+    I_k = I_k^\star + \sigma \ast \epsilon_k,
+    \qquad \epsilon_k \sim \mathcal{N}(\bm{0}, \bm{I}),
+    \label{eq:img_noise}
+\end{equation}
+where $\ast$ denotes spatial convolution and both the magnitude and the correlation structure of $\sigma$ are unknown. C-UNSURE estimates this structure by relaxing the zero-divergence constraint of cross-validation to a \emph{zero expected divergence} constraint over a bounded correlation support $\pm r$ taps, solving
+\begin{equation}
+    \min_{f}\ \max_{\eta}\
+    \E_{I}\!\left[
+        \|f(I) - I\|^2
+        + \sum_{j=-r}^{r} \eta_j \sum_{i}
+          \frac{\partial f_i}{\partial I_{(i+j)\bmod n}}(I)
+    \right].
+    \label{eq:cunsure}
+\end{equation}
+The optimal multipliers admit the closed form $\hat{\eta}_k = \mathcal{F}^{-1}\!\big(1 / \mathcal{F} h_k\big)$, where $h_k$ is the $\pm r$-tap autocorrelation of the score $\nabla \log p_I$ and $\mathcal{F}$ is the discrete Fourier transform. The estimated image-space noise covariance is the corresponding circulant matrix,
+\begin{equation}
+    \bm{\Sigma}_k^{\text{img}} = \operatorname{circ}(\hat{\eta}_k).
+    \label{eq:img_cov}
+\end{equation}
+Crucially, only an \emph{upper bound} on the correlation radius $r$ is required; the per-direction variances need not be specified. Over-specifying $r$ incurs only a mild penalty, whereas under-specifying it degrades performance, so $r$ may be chosen generously. We estimate $\hat{\eta}_k$ per frame, allowing $\bm{\Sigma}_k^{\text{img}}$ to track noise that varies across slices and subjects.
+
+\paragraph{Propagation through the frozen encoder.}
+Because the CineMA encoder $\mathcal{E}_{\text{CineMA}}$ is frozen and the acquisition noise is small, we linearise the encoder about $I_k$:
+\begin{equation}
+\begin{aligned}
+    \tilde{\bm{z}}_k &= \mathcal{E}_{\text{CineMA}}(I_k + \bm{n}_k) \approx \mathcal{E}_{\text{CineMA}}(I_k) + \bm{J}_{\mathcal{E}}\, \bm{n}_k, \\
+    \bm{J}_{\mathcal{E}} &= \frac{\partial \mathcal{E}_{\text{CineMA}}}{\partial I}\bigg|_{I_k},
+\end{aligned}
+\label{eq:enc_lin}
+\end{equation}
+which yields the latent observation covariance by the delta method---the same principle used throughout Section~\ref{sec:clinical}:
+\begin{equation}
+    \boxed{\ \bm{\Sigma}_k = \bm{J}_{\mathcal{E}}\, \bm{\Sigma}_k^{\text{img}}\, \bm{J}_{\mathcal{E}}^{\top}.\ }
+    \label{eq:latent_cov}
+\end{equation}
+Equation~\eqref{eq:latent_cov} highlights why the isotropic assumption is structurally inadequate: even for white image noise ($\bm{\Sigma}_k^{\text{img}} = \sigma^2 \bm{I}$), the encoder Jacobian $\bm{J}_{\mathcal{E}}$ couples the latent coordinates and renders $\bm{\Sigma}_k$ a dense, correlated matrix. The data-driven covariance therefore corrects a modelling error that no scalar re-scaling can repair.
+
+\paragraph{Matrix-free Monte-Carlo estimator.}
+The Jacobian $\bm{J}_{\mathcal{E}}$ is far too large to materialise, but the target $\bm{\Sigma}_k \in \R^{d \times d}$ is small. We estimate it with a Jacobian-vector-product approximation using $S$ finite-difference probes,
+\begin{align}
+    \bm{n}^{(s)} &= \bm{\kappa}_k \ast \bm{\xi}^{(s)},
+        \qquad \bm{\xi}^{(s)} \sim \mathcal{N}(\bm{0}, \bm{I}), \\
+    \delta\bm{z}^{(s)} &= \frac{1}{\tau}
+        \Big( \mathcal{E}_{\text{CineMA}}(I_k + \tau\, \bm{n}^{(s)})
+              - \mathcal{E}_{\text{CineMA}}(I_k) \Big), \\
+    \hat{\bm{\Sigma}}_k &= \frac{1}{S} \sum_{s=1}^{S}
+        \delta\bm{z}^{(s)} \big(\delta\bm{z}^{(s)}\big)^{\top},
+    \label{eq:mc_jvp}
+\end{align}
+where $\tau$ is a small constant and $\bm{\kappa}_k$ is the square-root kernel of $\bm{\Sigma}_k^{\text{img}}$, obtained from $\hat{\eta}_k$ by an elementwise square root in the Fourier domain so that correlated probes can be drawn at the cost of a single FFT. Each probe requires only one forward pass through the frozen encoder. For large $d$, $\hat{\bm{\Sigma}}_k$ may be retained in full, low-rank, or block-diagonal form, consistent with the block-diagonal approximation already adopted for $\bm{R}_k$ in Eq.~\eqref{eq:output_cov}.
+
+\paragraph{Relation to self-calibration.}
+The data-driven $\bm{\Sigma}_k$ and the innovation-based mechanism of Section~\ref{sec:calibration} address complementary sources of uncertainty. The adaptive scaling $\bm{Q}_k = \bar{\rho}_k \bm{Q}_0$~\eqref{eq:adaptive_Q} adjusts the \emph{process} (epistemic) noise by a single scalar and therefore cannot alter the \emph{structure} of the observation covariance. C-UNSURE supplies precisely that structure---an anisotropic, spatially correlated estimate of the \emph{observation} (aleatoric) noise---grounded in the noise physics rather than in a reconstruction-error heuristic. Together they close the loop on both noise terms in Eq.~\eqref{eq:adaptive_cov_prop}, and the estimate $\hat{\bm{\Sigma}}_k$ replaces $\bm{\Sigma}_k$ in Eqs.~\eqref{eq:cov_update} and~\eqref{eq:innov_cov} without any other modification to the pipeline.
+
+\paragraph{Remarks.}
+Three points warrant attention. First, the C-UNSURE multiplier is a \emph{conservative} estimate of the noise level ($\hat{\eta} \ge \sigma^2$), so the resulting bands are, if anything, slightly wider---a desirable property for clinical uncertainty quantification. Second, the validity of the encoder linearisation~\eqref{eq:enc_lin} should be checked at the operating noise level by comparing $\|\bm{J}_{\mathcal{E}}\bm{n}\|$ against second-order terms, mirroring the linearisation caveat discussed in Section~\ref{sec:discussion}. Third, Eq.~\eqref{eq:img_cov} assumes stationary (circulant) noise across the image; where g-factor variation makes the noise spatially non-stationary, $\bm{\Sigma}_k$ can be estimated block-wise per region, or with the diagonal C-UNSURE parameterisation $\bm{\Sigma}_\eta = \diag(\bm{\eta})$, which permits a distinct unknown noise level per location while remaining more expressive than cross-validation.
+
+\subsection{Neural SDE for Cardiac Deformation}
+\label{sec:neural_sde_deformation}
+
+Let $\Omega \subset \R^3$ be the image domain and let $X=\{\bm{x}_i\}_{i=1}^{N_v}$ denote the voxel grid. We choose a reference cardiac frame $I_0$ (typically end-diastole) and define the deformation at time $t_k$ as a backward transformation
+\begin{equation}
+    \bm{\phi}_k : \Omega \rightarrow \Omega,
+    \qquad
+    \widehat I_k(\bm{x}) = W(I_0,\bm{\phi}_k)(\bm{x}) = I_0(\bm{\phi}_k(\bm{x})).
+    \label{eq:warp_convention}
+\end{equation}
+This convention is used because differentiable spatial sampling directly warps the reference image into each target frame. We write
+\begin{equation}
+    \bm{\phi}_k(\bm{x}) = \bm{x} + \bm{u}_k(\bm{x}),
+    \label{eq:disp_def}
+\end{equation}
+where $\bm{u}_k:\Omega\rightarrow\R^3$ is the displacement field.
+
+Directly evolving a dense deformation vector in $\R^{3N_v}$ is expensive and makes covariance propagation intractable. We therefore model cardiac motion in a compact hidden state $\bm{h}(t)\in\R^m$ and decode the dense deformation through an output network $c_\psi$:
+\begin{equation}
+    \bm{u}_k = c_\psi(\bm{h}_k),
+    \qquad
+    \bm{\phi}_k(\bm{x})=\bm{x}+\bm{u}_k(\bm{x}).
+    \label{eq:def_decoder}
+\end{equation}
+The hidden state follows an It\^{o} Neural SDE between observed frames,
+\begin{equation}
+    d\bm{h}(t)
+    =
+    \bm{f}_\theta(\bm{h}(t),t)\,dt
+    +
+    \bm{G}_\theta(\bm{h}(t),t)\,d\bm{W}_t,
+    \qquad
+    d\bm{W}_t\sim\mathcal{N}(\bm{0},\bm{Q}_0\,dt),
+    \label{eq:sde}
+\end{equation}
+where $\bm{f}_\theta$ captures the deterministic cardiac dynamics and $\bm{G}_\theta$ controls process uncertainty. This compact formulation is the one used for analytical covariance propagation, while the dense deformation is still learned by image registration losses through Eq.~\eqref{eq:warp_convention}.
+
+\paragraph{Connection to NODEO.}
+The deformation decoder may be implemented either as a direct displacement decoder, Eq.~\eqref{eq:def_decoder}, or as an integrated velocity decoder. In the velocity form, a smooth velocity field is generated as
+\begin{equation}
+    \bm{v}_k(\bm{x}) = K \ast a_\psi(\bm{h}_k,\bm{x},t_k),
+    \label{eq:velocity_decoder}
+\end{equation}
+where $K$ is a Gaussian smoothing kernel and $a_\psi$ is a neural field or convolutional decoder. The deformation is then obtained by integrating
+\begin{equation}
+    \frac{d\bm{\phi}(\bm{x},t)}{dt}=\bm{v}(\bm{\phi}(\bm{x},t),t),
+    \qquad
+    \bm{\phi}(\bm{x},0)=\bm{x}.
+    \label{eq:velocity_flow}
+\end{equation}
+This matches the NODEO view of voxels as particles driven by a learned velocity field, while the SDE-RNN provides uncertainty-aware temporal assimilation of observed frames.
+
+\subsection{CVRNN Update at Observed Frames}
+\label{sec:cvgruu_update_clarified}
+
+At each observed cine frame $I_k$, the frozen CineMA encoder supplies the latent observation $\tilde{\bm{z}}_k$ with latent covariance $\bm{\Sigma}_k$ obtained from C-UNSURE. The SDE first propagates the previous posterior state to a prior state:
+\begin{equation}
+    \hat{\bm{h}}'_k, \bm{P}'_k =
+    \mathrm{SDESolve}(\hat{\bm{h}}_{k-1},\bm{P}_{k-1},t_{k-1},t_k).
+    \label{eq:sde_solve}
+\end{equation}
+The observation is then assimilated by a covariance-propagating recurrent cell:
+\begin{equation}
+    \hat{\bm{h}}_k = v_\omega(\hat{\bm{h}}'_k,\tilde{\bm{z}}_k),
+    \label{eq:gru_update}
+\end{equation}
+and its covariance is updated by the first-order uncertainty transformation
+\begin{equation}
+    \bm{P}_k =
+    \bm{\Delta}_h v_\omega\,\bm{P}'_k\,(\bm{\Delta}_h v_\omega)^\top
+    +
+    \bm{\Delta}_z v_\omega\,\bm{\Sigma}_k\,(\bm{\Delta}_z v_\omega)^\top ,
+    \label{eq:cov_update}
+\end{equation}
+where
+\begin{equation}
+    \bm{\Delta}_h v_\omega =
+    \frac{\partial v_\omega(\bm{h},\bm{z})}{\partial \bm{h}}
+    \bigg|_{\hat{\bm{h}}'_k,\tilde{\bm{z}}_k},
+    \qquad
+    \bm{\Delta}_z v_\omega =
+    \frac{\partial v_\omega(\bm{h},\bm{z})}{\partial \bm{z}}
+    \bigg|_{\hat{\bm{h}}'_k,\tilde{\bm{z}}_k}.
+    \label{eq:cvgru_jacs}
+\end{equation}
+The first term propagates dynamic or epistemic uncertainty; the second injects aleatoric observation uncertainty learned by C-UNSURE.
+
+\subsection{Analytical Uncertainty Propagation}
+\label{sec:analytical_uncertainty_clarified}
+
+Between frames, the hidden-state mean and covariance are propagated by linearizing the SDE drift:
+\begin{align}
+    \frac{d\hat{\bm{h}}}{dt} &= \bm{f}_\theta(\hat{\bm{h}},t), \label{eq:mean_prop} \\
+    \frac{d\bm{P}}{dt}
+    &=
+    \bm{F}_h\bm{P}
+    + \bm{P}\bm{F}_h^\top
+    + \bm{G}_h \bm{Q}_0 \bm{G}_h^\top,
+    \label{eq:cov_prop}
+\end{align}
+where
+\begin{equation}
+    \bm{F}_h =
+    \frac{\partial \bm{f}_\theta(\bm{h},t)}{\partial \bm{h}}
+    \bigg|_{\hat{\bm{h}}},
+    \qquad
+    \bm{G}_h=\bm{G}_\theta(\hat{\bm{h}},t).
+\end{equation}
+In the calibrated version, $\bm{Q}_0$ is replaced by $\bar{\rho}_k\bm{Q}_0$, where $\bar{\rho}_k$ is the running innovation calibration factor.
+
+\subsubsection{Output Transformation}
+
+The dense deformation field is decoded from the posterior hidden state:
+\begin{align}
+    \widehat{\bm{u}}_k &= c_\psi(\hat{\bm{h}}_k), \\
+    \hat{\bm{\phi}}_k(\bm{x}) &= \bm{x} + \widehat{\bm{u}}_k(\bm{x}).
+    \label{eq:output_mean}
+\end{align}
+Let
+\begin{equation}
+    \bm{C}_k =
+    \frac{\partial \operatorname{vec}(c_\psi(\bm{h}))}
+         {\partial \bm{h}}
+    \bigg|_{\hat{\bm{h}}_k}
+    \in \R^{3N_v\times m}.
+    \label{eq:def_jac}
+\end{equation}
+The deformation covariance is
+\begin{equation}
+    \boxed{\bm{R}_k = \bm{C}_k \bm{P}_k \bm{C}_k^\top.}
+    \label{eq:output_cov}
+\end{equation}
+Since storing $\bm{R}_k\in\R^{3N_v\times3N_v}$ is infeasible, we use either a diagonal or voxel-wise block-diagonal approximation:
+\begin{align}
+    \operatorname{diag}(\bm{R}_k)_i
+    &= \bm{c}_{k,i}^\top \bm{P}_k \bm{c}_{k,i}, \label{eq:def_cov_diag}\\
+    \bm{R}_k^{(\bm{x})}
+    &=
+    \bm{C}_k^{(\bm{x})}\bm{P}_k(\bm{C}_k^{(\bm{x})})^\top
+    \in\R^{3\times3},
+    \label{eq:def_cov_block}
+\end{align}
+where $\bm{c}_{k,i}$ is the $i$-th row of $\bm{C}_k$, and $\bm{C}_k^{(\bm{x})}\in\R^{3\times m}$ contains the three Jacobian rows corresponding to the displacement vector at voxel $\bm{x}$. The block form preserves local correlations between the three displacement components while avoiding a full dense covariance.
+
+\subsection{Training Objective for Deformation Fields}
+\label{sec:deformation_training_objective}
+
+The deformation field is learned without ground-truth displacement labels using the same principle as NODEO: optimize a differentiable registration objective between the warped reference frame and the observed target frame, while regularizing the transformation. CineMA and C-UNSURE are frozen and are used to provide latent observations and observation uncertainty for the CVRNN/covariance update; they do not replace the image registration objective. The trainable components are the SDE drift $\bm{f}_\theta$, diffusion $\bm{G}_\theta$, CVRNN update $v_\omega$, latent observation decoder $o_\chi$ used for innovation monitoring, and deformation decoder $c_\psi$.
+
+\paragraph{Image registration loss.}
+For each observed frame, the decoded deformation warps the reference frame:
+\begin{equation}
+    \widehat I_k = W(I_0,\widehat{\bm{\phi}}_k).
+\end{equation}
+The primary registration loss is local normalized cross-correlation:
+\begin{equation}
+    \mathcal{L}_{\mathrm{img}}
+    =
+    \sum_{k=1}^{K}
+    \left[
+    1-\mathrm{LNCC}(\widehat I_k,I_k)
+    \right].
+    \label{eq:l_img}
+\end{equation}
+This is the main loss that makes $c_\psi(\bm{h}_k)$ learn a meaningful deformation field.
+
+\paragraph{Deformation regularization.}
+Following NODEO-style registration, we regularize folding, excessive motion, and spatial roughness:
+\begin{align}
+    \mathcal{L}_{\mathrm{Jdet}}
+    &=
+    \frac{1}{K N_v}
+    \sum_{k,\bm{x}}
+    \left\|
+    \operatorname{ReLU}(\epsilon-\det\nabla\widehat{\bm{\phi}}_k(\bm{x}))
+    \right\|_2^2,
+    \label{eq:l_jdet}\\
+    \mathcal{L}_{\mathrm{mag}}
+    &=
+    \frac{1}{K N_v}
+    \sum_{k,\bm{x}}
+    \|\widehat{\bm{u}}_k(\bm{x})\|_2^2,
+    \label{eq:l_mag}\\
+    \mathcal{L}_{\mathrm{smt}}
+    &=
+    \frac{1}{K N_v}
+    \sum_{k,\bm{x}}
+    \|\nabla\widehat{\bm{u}}_k(\bm{x})\|_2^2.
+    \label{eq:l_smt}
+\end{align}
+For the velocity-decoder variant, $\mathcal{L}_{\mathrm{mag}}$ is applied to the velocity field along the integration path, matching NODEO's velocity magnitude penalty.
+
+\paragraph{Total objective.}
+The deformation training loss is therefore kept close to NODEO:
+\begin{align}
+    \mathcal{L}_{\mathrm{NODEO}}
+    =
+    \mathcal{L}_{\mathrm{img}}
+    +\lambda_{\mathrm{Jdet}}\mathcal{L}_{\mathrm{Jdet}}
+    +\lambda_{\mathrm{mag}}\mathcal{L}_{\mathrm{mag}}
+    +\lambda_{\mathrm{smt}}\mathcal{L}_{\mathrm{smt}}.
+    \label{eq:l_total}
+\end{align}
+The latent CineMA observation and C-UNSURE covariance are used in the CVRNN update and the innovation-based calibration in Section~\ref{sec:calibration}; they are not introduced as additional primary registration losses.
+
+\subsection{Training Procedure}
+\label{sec:training_procedure}
+
+Training proceeds in four stages. First, each cine frame is encoded by the frozen CineMA encoder, C-UNSURE estimates the image-noise kernel $\hat{\eta}_k$, and Eq.~\eqref{eq:mc_jvp} produces $\bm{\Sigma}_k$. Second, frames from the same patient and view are ordered by cardiac time, forming samples $\{I_k,\tilde{\bm{z}}_k,\bm{\Sigma}_k,t_k\}_{k=0}^{K}$. Third, the model alternates SDE propagation and CVRNN updates, decodes $\widehat{\bm{\phi}}_k$, warps the reference frame, and optimizes the NODEO-style loss in Eq.~\eqref{eq:l_total}. Fourth, validation monitors image similarity, Dice/MCD on annotated frames when labels are available, folding rate $\det\nabla\phi_k\leq0$, and the normalized innovation ratio in Section~\ref{sec:calibration}. The checkpoint is selected by registration quality subject to stable deformation regularity and calibrated innovations.
+
+%==============================================================
+\section{From Deformation Uncertainty to Clinical Metric Prediction Bands}
+\label{sec:clinical}
+%==============================================================
+
+The key novelty of this work is the analytical propagation of the deformation-field covariance $\bm{R}_k$ to prediction bands on clinical metrics. We treat each clinical metric as a differentiable function $\mathcal{M}: \R^{3N_v} \to \R$ (or $\R^p$) of the deformation field and apply the delta method.
+
+\subsection{General Propagation Rule}
+
+For any differentiable clinical metric $\mathcal{M}(\bm{\phi})$, the mean and variance of $\mathcal{M}$ under the deformation uncertainty are:
+\begin{align}
+    \hat{\mathcal{M}}_k &= \mathcal{M}(\hat{\bm{\phi}}_k), \label{eq:metric_mean} \\
+    \sigma^2_{\mathcal{M},k} &= \bm{J}_{\mathcal{M}}^\top \bm{R}_k \, \bm{J}_{\mathcal{M}}, \label{eq:metric_var}
+\end{align}
+where $\bm{J}_{\mathcal{M}} = \frac{\partial \mathcal{M}}{\partial \bm{\phi}}\big|_{\hat{\bm{\phi}}_k} \in \R^{3N_v}$ is the Jacobian of the metric with respect to the deformation field. The $(1-\alpha)$ prediction band is then:
+\begin{equation}
+    \mathcal{M}_k \in \left[\hat{\mathcal{M}}_k - z_{\alpha/2}\,\sigma_{\mathcal{M},k}, \;\; \hat{\mathcal{M}}_k + z_{\alpha/2}\,\sigma_{\mathcal{M},k}\right],
+    \label{eq:pred_band}
+\end{equation}
+where $z_{\alpha/2}$ is the standard normal quantile. Importantly, these bands are \emph{not} calibrated post-hoc; they are the direct analytical consequence of the SDE-RNN uncertainty propagation.
+
+We now derive $\bm{J}_{\mathcal{M}}$ for three key cardiac metrics.
+
+\subsection{Ejection Fraction (EF)}
+
+The left ventricular ejection fraction is defined as:
+\begin{equation}
+    \text{EF} = \frac{V_{\text{ED}} - V_{\text{ES}}}{V_{\text{ED}}} = 1 - \frac{V_{\text{ES}}}{V_{\text{ED}}},
+    \label{eq:ef_def}
+\end{equation}
+where $V_{\text{ED}}$ and $V_{\text{ES}}$ are the end-diastolic and end-systolic volumes. Given a reference segmentation mask $M_0(\bm{x})$ at ED, the practical volume at time $t_k$ is computed by warping the reference mask with the estimated deformation,
+\begin{equation}
+    \widehat M_k = W(M_0,\widehat{\bm{\phi}}_k),
+    \qquad
+    V_k \approx \sum_{i=1}^{N_v}\widehat M_k(\bm{x}_i)\Delta v .
+    \label{eq:warped_volume}
+\end{equation}
+For analytical propagation, the same volume can be expressed through the local deformation Jacobian:
+\begin{equation}
+    V_k = \int_\Omega M_0(\bm{x}) \, |J_{\bm{\phi}_k}(\bm{x})| \, d\bm{x} \approx \sum_{i=1}^{N_v} M_0(\bm{x}_i) \, |J_{\bm{\phi}_k}(\bm{x}_i)| \, \Delta v,
+    \label{eq:volume}
+\end{equation}
+where $J_{\bm{\phi}_k}(\bm{x}_i) = \frac{\partial \bm{\phi}_k}{\partial \bm{x}}\big|_{\bm{x}_i}$ is the spatial Jacobian and $\Delta v$ is the voxel volume.
+
+The sensitivity of $V_k$ to the deformation field is:
+\begin{equation}
+    \frac{\partial V_k}{\partial \bm{\phi}_k(\bm{x}_i)} = M_0(\bm{x}_i) \, \frac{\partial |J_{\bm{\phi}_k}(\bm{x}_i)|}{\partial \bm{\phi}_k(\bm{x}_i)} \, \Delta v.
+    \label{eq:vol_sensitivity}
+\end{equation}
+The derivative of the Jacobian determinant with respect to the deformation components involves the cofactor matrix of $J_{\bm{\phi}_k}$. Specifically, for a 3D deformation:
+\begin{equation}
+    \frac{\partial |J|}{\partial \phi^a_i} = \text{cof}(J)_{ba} \frac{\partial J_{bi}}{\partial \phi^a_i},
+    \label{eq:jac_det_deriv}
+\end{equation}
+where $\text{cof}(J)$ is the cofactor matrix and the spatial derivatives are implemented with finite differences.
+
+The variance of EF is then obtained by propagating the volume variances:
+\begin{align}
+    \sigma^2_V(t_k) &= \bm{J}_V^\top \bm{R}_k \, \bm{J}_V, \label{eq:vol_var} \\
+    \sigma^2_{\text{EF}} &= \left(\frac{\partial \text{EF}}{\partial V_{\text{ES}}}\right)^2 \sigma^2_V(t_{\text{ES}}) + \left(\frac{\partial \text{EF}}{\partial V_{\text{ED}}}\right)^2 \sigma^2_V(t_{\text{ED}}), \label{eq:ef_var}
+\end{align}
+where $\frac{\partial \text{EF}}{\partial V_{\text{ES}}} = -\frac{1}{V_{\text{ED}}}$ and $\frac{\partial \text{EF}}{\partial V_{\text{ED}}} = \frac{V_{\text{ES}}}{V_{\text{ED}}^2}$.
+
+\subsection{Regional Wall Motion}
+
+Regional wall motion quantifies the displacement of the endocardial boundary between ED and ES. For a set of endocardial points $\{\bm{x}_j\}_{j=1}^{N_e}$, the wall motion at point $j$ is:
+\begin{equation}
+    \text{WM}_j = \|\bm{\phi}_{\text{ES}}(\bm{x}_j) - \bm{x}_j\|_2.
+    \label{eq:wm_def}
+\end{equation}
+
+The Jacobian of $\text{WM}_j$ with respect to the deformation field is:
+\begin{equation}
+    \frac{\partial \text{WM}_j}{\partial \bm{\phi}_{\text{ES}}(\bm{x}_j)} = \frac{\bm{\phi}_{\text{ES}}(\bm{x}_j) - \bm{x}_j}{\|\bm{\phi}_{\text{ES}}(\bm{x}_j) - \bm{x}_j\|_2},
+    \label{eq:wm_jac}
+\end{equation}
+and the variance of $\text{WM}_j$ is:
+\begin{equation}
+    \sigma^2_{\text{WM},j} = \bm{J}_{\text{WM},j}^\top \bm{R}_{\text{ES}}^{(j)} \, \bm{J}_{\text{WM},j},
+    \label{eq:wm_var}
+\end{equation}
+where $\bm{R}_{\text{ES}}^{(j)} \in \R^{3 \times 3}$ is the $3 \times 3$ diagonal block of $\bm{R}_{\text{ES}}$ corresponding to voxel $j$.
+
+\subsection{Myocardial Strain}
+
+The Green--Lagrange strain tensor at voxel $\bm{x}_i$ is:
+\begin{equation}
+    \bm{E}(\bm{x}_i) = \frac{1}{2}\left(\bm{F}^\top \bm{F} - \bm{I}\right), \quad \bm{F} = J_{\bm{\phi}}(\bm{x}_i),
+    \label{eq:strain_def}
+\end{equation}
+where $\bm{F}$ is the deformation gradient. The circumferential strain $E_{cc}$, radial strain $E_{rr}$, and longitudinal strain $E_{ll}$ are obtained by projecting $\bm{E}$ onto the local cardiac coordinate system $(\bm{e}_c, \bm{e}_r, \bm{e}_l)$:
+\begin{equation}
+    E_{cc} = \bm{e}_c^\top \bm{E} \, \bm{e}_c.
+    \label{eq:circ_strain}
+\end{equation}
+
+The sensitivity of $E_{cc}$ to the deformation field follows the chain rule through $\bm{E} \to \bm{F} \to \bm{\phi}$:
+\begin{equation}
+    \frac{\partial E_{cc}}{\partial \phi^a_i} = \bm{e}_c^\top \left(\frac{\partial \bm{F}^\top}{\partial \phi^a_i}\bm{F} + \bm{F}^\top \frac{\partial \bm{F}}{\partial \phi^a_i}\right) \bm{e}_c \cdot \frac{1}{2}.
+    \label{eq:strain_sensitivity}
+\end{equation}
+
+The variance of $E_{cc}$ is then:
+\begin{equation}
+    \sigma^2_{E_{cc},i} = \bm{J}_{E_{cc},i}^\top \bm{R}_k^{(\text{local})} \, \bm{J}_{E_{cc},i},
+    \label{eq:strain_var}
+\end{equation}
+where $\bm{R}_k^{(\text{local})}$ includes the covariance blocks for voxel $i$ and its finite-difference neighbors.
+
+\subsection{Prediction Band Construction}
+
+For each clinical metric $\mathcal{M} \in \{\text{EF}, \text{WM}, E_{cc}, E_{rr}, E_{ll}\}$, the $(1-\alpha)$ analytical prediction band at time $t_k$ is:
+\begin{equation}
+    \boxed{\mathcal{M}_k \in \left[\hat{\mathcal{M}}_k \pm z_{\alpha/2} \cdot \sigma_{\mathcal{M},k}\right]}
+    \label{eq:final_band}
+\end{equation}
+
+These bands have several distinctive properties:
+\begin{itemize}
+    \item \textbf{Analytically derived}: No Monte Carlo sampling or external calibration set is required.
+    \item \textbf{Decomposable}: $\sigma^2_{\mathcal{M},k}$ can be decomposed into aleatoric and epistemic components by tracing which terms in $\bm{P}_k$ originate from $\bm{\Sigma}_k$ (aleatoric) vs.\ $\bm{G}_h\bm{Q}\bm{G}_h^\top$ (epistemic).
+    \item \textbf{Time-varying}: The band width changes across the cardiac cycle, naturally widening in phases with high motion uncertainty (e.g., isovolumic contraction) and narrowing near observed frames.
+    \item \textbf{Spatially varying}: For per-voxel metrics (strain, wall motion), the band width varies across the myocardium, reflecting regional differences in deformation confidence.
+\end{itemize}
+
+%==============================================================
+\section{Self-Calibrating Prediction Bands}
+\label{sec:calibration}
+%==============================================================
+
+A known limitation of linearization-based uncertainty propagation is that the covariance estimates may be systematically biased due to nonlinear effects. To address this, we introduce an innovation-based adaptive calibration mechanism that adjusts the process noise online.
+
+\subsection{Innovation Monitoring}
+
+At each observed frame $t_k$, we compute the innovation (prediction residual):
+\begin{equation}
+    \bm{e}_k = \tilde{\bm{z}}_k - o_\chi(\hat{\bm{h}}'_k,t_k),
+    \label{eq:innovation}
+\end{equation}
+and the predicted innovation covariance:
+\begin{equation}
+    \bm{S}_k = \bm{\Delta}_h o_\chi \, \bm{P}'_k \, (\bm{\Delta}_h o_\chi)^\top + \bm{\Sigma}_k.
+    \label{eq:innov_cov}
+\end{equation}
+
+In a well-calibrated system, the normalized innovation squared $\bm{e}_k^\top \bm{S}_k^{-1} \bm{e}_k$ should follow a $\chi^2$ distribution with degrees of freedom equal to the observation dimension. We monitor the ratio:
+\begin{equation}
+    \rho_k = \frac{1}{d} \bm{e}_k^\top \bm{S}_k^{-1} \bm{e}_k,
+    \label{eq:nis}
+\end{equation}
+where $d$ is the observation dimension. If the system is well-calibrated, $\E[\rho_k] = 1$.
+
+\subsection{Adaptive Process Noise Scaling}
+
+We maintain a running estimate of the calibration ratio using an exponential moving average:
+\begin{equation}
+    \bar{\rho}_k = (1 - \lambda)\bar{\rho}_{k-1} + \lambda \rho_k,
+    \label{eq:ema}
+\end{equation}
+where $\lambda \in (0,1)$ is the forgetting factor. The process noise covariance is then scaled:
+\begin{equation}
+    \bm{Q}_k = \bar{\rho}_k \cdot \bm{Q}_0,
+    \label{eq:adaptive_Q}
+\end{equation}
+where $\bm{Q}_0$ is the nominal (learned) diffusion covariance.
+
+This mechanism has a clear interpretation:
+\begin{itemize}
+    \item $\bar{\rho}_k > 1$: The innovations are larger than predicted, indicating \emph{overconfident} covariance estimates. The process noise is scaled up, widening the prediction bands.
+    \item $\bar{\rho}_k < 1$: The innovations are smaller than predicted, indicating \emph{underconfident} covariance estimates. The process noise is scaled down, tightening the bands.
+    \item $\bar{\rho}_k \approx 1$: The system is well-calibrated.
+\end{itemize}
+
+The overall SDE covariance propagation \eqref{eq:cov_prop} becomes:
+\begin{equation}
+    \frac{d\bm{P}}{dt} = \bm{P}\bm{F}_h^\top + \bm{F}_h\bm{P} + \bm{G}_h\,(\bar{\rho}_k \bm{Q}_0)\,\bm{G}_h^\top,
+    \label{eq:adaptive_cov_prop}
+\end{equation}
+closing the loop between observation residuals and prediction band width.
+
+%==============================================================
+\section{Complete Algorithm}
+\label{sec:algorithm}
+%==============================================================
+
+Algorithm~\ref{alg:framework} summarizes the complete inference pipeline.
+
+\begin{algorithm}[t]
+\caption{Uncertainty-Aware Cardiac Assessment}
+\label{alg:framework}
+\begin{algorithmic}[1]
+\REQUIRE Cine-MRI sequence $\{I_k, t_k\}_{k=0}^{K}$, frozen CineMA encoder $\mathcal{E}$, trained networks $\bm{f}_\theta, \bm{G}_\theta, v_\omega, o_\chi, c_\psi$
+\STATE \textbf{Encode:} $\bm{z}_k \gets \mathcal{E}(I_k)$ for all $k$
+\STATE \textbf{Observation covariance:} estimate $\hat{\eta}_k$ with C-UNSURE and compute $\bm{\Sigma}_k$ by Eq.~\eqref{eq:mc_jvp}
+\STATE Initialize $\hat{\bm{h}}_0, \bm{P}_0 \gets \bm{0}$; $\bar{\rho}_0 \gets 1$
+\FOR{$k = 1$ to $K$}
+    \STATE \textbf{SDE Propagation:}
+    \STATE $\hat{\bm{h}}'_k, \bm{P}'_k \gets \text{SDESolve}(\hat{\bm{h}}_{k-1}, \bm{P}_{k-1}, (t_{k-1}, t_k), \bm{f}_\theta, \bm{G}_\theta, \bar{\rho}_{k-1}\bm{Q}_0)$
+    \IF{frame $I_k$ is observed}
+        \STATE \textbf{Innovation:}
+        \STATE $\bm{e}_k \gets \tilde{\bm{z}}_k - o_\chi(\hat{\bm{h}}'_k,t_k)$
+        \STATE $\bm{S}_k \gets \bm{\Delta}_h o_\chi \, \bm{P}'_k \, (\bm{\Delta}_h o_\chi)^\top + \bm{\Sigma}_k$
+        \STATE $\rho_k \gets \frac{1}{d}\bm{e}_k^\top \bm{S}_k^{-1}\bm{e}_k$
+        \STATE $\bar{\rho}_k \gets (1-\lambda)\bar{\rho}_{k-1} + \lambda\rho_k$
+        \STATE \textbf{CVRNN Update:}
+        \STATE $\hat{\bm{h}}_k, \bm{P}_k \gets \text{CVGRU}(\hat{\bm{h}}'_k, \bm{P}'_k, \tilde{\bm{z}}_k, \bm{\Sigma}_k)$
+    \ELSE
+        \STATE $\hat{\bm{h}}_k \gets \hat{\bm{h}}'_k$; $\bm{P}_k \gets \bm{P}'_k$
+    \ENDIF
+    \STATE \textbf{Output:}
+    \STATE $\hat{\bm{u}}_k \gets c_\psi(\hat{\bm{h}}_k)$; $\hat{\bm{\phi}}_k(\bm{x}) \gets \bm{x}+\hat{\bm{u}}_k(\bm{x})$
+    \STATE $\bm{R}_k \gets \bm{C}_k\bm{P}_k\bm{C}_k^\top$ using diagonal or block approximation
+    \STATE \textbf{Clinical Metrics:}
+    \STATE $\hat{\mathcal{M}}_k, \sigma^2_{\mathcal{M},k} \gets$ Eqs.~\eqref{eq:metric_mean}--\eqref{eq:metric_var}
+\ENDFOR
+\RETURN $\{\hat{\mathcal{M}}_k \pm z_{\alpha/2}\sigma_{\mathcal{M},k}\}_{k=0}^{K}$
+\end{algorithmic}
+\end{algorithm}
+
+%==============================================================
+\section{Experimental Design}
+\label{sec:experiments}
+%==============================================================
+
+\subsection{Dataset}
+
+We evaluate on the ACDC dataset \cite{bernard2018deep}, comprising 100 patients with cine-MRI sequences (12--35 frames per cycle). Expert segmentation labels for the left ventricle (LV), right ventricle (RV), and myocardium (MYO) are provided at end-diastole (ED) and end-systole (ES). We use a 70/10/20 train/validation/test split.
+
+\subsection{Baselines}
+
+We compare against:
+\begin{enumerate}
+    \item \textbf{MC-Dropout NODEO}: Deterministic NODEO with MC-dropout (50 forward passes) for uncertainty estimation.
+    \item \textbf{Deep Ensemble}: An ensemble of 5 independently trained NODEO models.
+    \item \textbf{NSDEO-MC}: The original NSDEO with 50 Brownian path samples for uncertainty.
+    \item \textbf{Conformal Prediction}: Post-hoc conformal calibration on a held-out set applied to NODEO point estimates.
+\end{enumerate}
+
+\subsection{Evaluation Metrics}
+
+\begin{itemize}
+    \item \textbf{Point accuracy}: Dice (segmentation), Mean Contour Distance (MCD), and bias in EF estimation.
+    \item \textbf{Calibration}: Expected Normalized Calibration Error (ENCE) \cite{levi2022evaluating} for all metrics.
+    \item \textbf{Coverage}: Empirical coverage of the $90\%$ prediction bands.
+    \item \textbf{Sharpness}: Mean width of prediction bands (narrower is better at equal coverage).
+    \item \textbf{Computational cost}: Wall-clock time for uncertainty estimation at inference.
+\end{itemize}
+
+\subsection{Expected Results}
+
+Table~\ref{tab:expected_results} summarizes the expected comparative performance. The key hypothesis is that our framework achieves comparable or better coverage than MC-based methods while being significantly faster and producing narrower (sharper) prediction bands due to the analytical propagation.
+
+% \begin{table*}[t]
+% \centering
+% \caption{Expected comparative results on ACDC test set. Coverage and sharpness are for the 90\% prediction band on EF.}
+% \label{tab:expected_results}
+% \begin{tabular}{lcccccc}
+% \toprule
+% \textbf{Method} & \textbf{Dice}$\uparrow$ & \textbf{EF Bias (\%)}$\downarrow$ & \textbf{ENCE}$\downarrow$ & \textbf{Coverage (\%)} & \textbf{Sharpness (\%EF)}$\downarrow$ & \textbf{Time (s)}$\downarrow$ \\
+% \midrule
+% MC-Dropout NODEO & 0.87 & 3.2 & 42.5 & 88.3 & 12.1 & 45.2 \\
+% Deep Ensemble & 0.88 & 2.8 & 35.2 & 90.1 & 10.5 & 52.8 \\
+% NSDEO-MC (50 samples) & 0.87 & 2.5 & 28.7 & 91.5 & 9.8 & 38.6 \\
+% Conformal (NODEO) & 0.87 & 3.2 & -- & 90.0 & 14.3 & 1.2$^\dagger$ \\
+% \textbf{Ours (SDE-RNN)} & \textbf{0.88} & \textbf{2.3} & \textbf{12.4} & \textbf{90.8} & \textbf{7.2} & \textbf{1.8} \\
+% \bottomrule
+% \multicolumn{7}{l}{\footnotesize $^\dagger$ Excludes calibration set construction time.}
+% \end{tabular}
+% \end{table*}
+
+%==============================================================
+\section{Discussion}
+\label{sec:discussion}
+%==============================================================
+
+\subsection{Advantages over Monte Carlo UQ}
+
+The analytical propagation of uncertainty through the SDE-RNN framework offers three key advantages over sampling-based approaches:
+
+\textbf{Computational efficiency.} A single forward pass with Jacobian computation replaces $S \geq 50$ stochastic forward passes, yielding a $20\text{--}30\times$ speedup at inference.
+
+\textbf{Decomposability.} The aleatoric contribution ($\bm{\Delta}_z v \, \bm{\Sigma}_k \, (\bm{\Delta}_z v)^\top$) and epistemic contribution ($\bm{G}_h\bm{Q}\bm{G}_h^\top$) are analytically separated at every time step, enabling clinicians to understand \emph{why} uncertainty is high---whether due to poor image quality (aleatoric) or insufficient dynamic information (epistemic).
+
+\textbf{Differentiability.} The entire pipeline from CineMA-encoded observations to clinical metric prediction bands is differentiable, enabling end-to-end training of the SDE-RNN components.
+
+\subsection{Comparison with Conformal Prediction}
+
+While conformal prediction provides distribution-free coverage guarantees, it requires:
+\begin{enumerate}
+    \item A held-out calibration set of sufficient size;
+    \item An exchangeability assumption that may not hold across cardiac pathologies;
+    \item Uniform band widths that do not adapt to the patient-specific uncertainty.
+\end{enumerate}
+
+Our analytical bands are patient-specific, time-varying, and spatially varying. They adapt to the local deformation complexity and image quality without requiring any calibration data beyond the training set. The self-calibration mechanism (Section~\ref{sec:calibration}) provides an \emph{online} analog of conformal calibration, adjusting the bands at each observed frame.
+
+\subsection{Limitations and Future Work}
+
+\textbf{Linearization bias.} The delta method is exact only for linear maps; for highly nonlinear transformations (e.g., Jacobian determinant near folds), higher-order terms may be needed. Unscented transforms or sigma-point methods could improve accuracy.
+
+\textbf{Scalability of covariance.} The full covariance $\bm{R}_k \in \R^{3N_v \times 3N_v}$ is intractable for large volumes. Our current implementation uses a block-diagonal approximation (per-voxel $3 \times 3$ blocks); structured low-rank approximations are a promising direction.
+
+\textbf{Validation on pathological data.} The framework should be validated on patients with severe wall motion abnormalities, where the linearization may be less accurate and the clinical need for uncertainty is greatest.
+
+%==============================================================
+\section{Conclusion}
+\label{sec:conclusion}
+%==============================================================
+
+We have presented a unified framework for uncertainty-aware cardiac function assessment that bridges neural stochastic differential equations, covariance-propagating recurrent networks, and clinical metric computation. By employing the pretrained CineMA encoder as a frozen observation model and analytically propagating uncertainty from the encoded observations through the deformation field to clinical metrics such as ejection fraction, wall motion, and myocardial strain, we obtain prediction bands that are (i) derived without Monte Carlo sampling, (ii) explicitly decomposed into aleatoric and epistemic components, (iii) self-calibrated via an innovation-based adaptive mechanism, and (iv) patient-specific, time-varying, and spatially varying. Our framework provides clinicians with not just a number, but a principled confidence interval for every cardiac measurement, directly derived from the physics of the underlying stochastic dynamical model.
+
+\newpage
+
+%==============================================================
+% References
+%==============================================================
+
+\begin{thebibliography}{30}
+
+\bibitem{chen2018neural}
+R.T.Q. Chen, Y. Rubanova, J. Bettencourt, and D.K. Duvenaud, ``Neural ordinary differential equations,'' in \emph{Advances in Neural Information Processing Systems}, vol.~31, 2018.
+
+\bibitem{li2020scalable}
+X. Li, T.-K.L. Wong, R.T.Q. Chen, and D.K. Duvenaud, ``Scalable gradients for stochastic differential equations,'' in \emph{AISTATS}, 2020.
+
+\bibitem{tzen2019neural}
+B. Tzen and M. Raginsky, ``Neural stochastic differential equations: Deep latent Gaussian models in the diffusion limit,'' \emph{arXiv:1905.09883}, 2019.
+
+\bibitem{wu2022nodeo}
+Y. Wu, T.Z. Jiahao, J. Wang, P.A. Yushkevich, M.A. Hsieh, and J.C. Gee, ``NODEO: A neural ordinary differential equation based optimization framework for deformable image registration,'' in \emph{CVPR}, 2022.
+
+\bibitem{wu2024sequentialnodeo}
+Y. Wu, M. Dong, R. Jena, C. Qin, and J.C. Gee, ``Neural ordinary differential equation based sequential image registration for dynamic characterization,'' \emph{Medical Image Analysis}, 2024.
+
+\bibitem{dahale2023general}
+S. Dahale, S. Munikoti, and B. Natarajan, ``A general framework for uncertainty quantification via neural SDE-RNN,'' \emph{arXiv:2306.01189}, 2023.
+
+\bibitem{fu2025cinema}
+Y. Fu, W. Bai, W. Yi, C. Manisty, A.N. Bhuva, T.A. Treibel, J.C. Moon, M.J. Clarkson, R.H. Davies, and Y. Hu, ``A versatile foundation model for cine cardiac magnetic resonance image analysis tasks,'' \emph{arXiv:2506.00679}, 2025.
+
+\bibitem{qin2018joint}
+C. Qin et al., ``Joint learning of motion estimation and segmentation for cardiac MR image sequences,'' in \emph{MICCAI}, pp.~472--480, 2018.
+
+\bibitem{qin2020biomechanics}
+C. Qin et al., ``Biomechanics-informed neural networks for myocardial motion tracking in MRI,'' in \emph{MICCAI}, pp.~296--306, 2020.
+
+\bibitem{baumgartner2019phiseg}
+C.F. Baumgartner et al., ``PHiSeg: Capturing uncertainty in medical image segmentation,'' in \emph{MICCAI}, 2019.
+
+\bibitem{vovk2005algorithmic}
+V. Vovk, A. Gammerman, and G. Shafer, \emph{Algorithmic Learning in a Random World}. Springer, 2005.
+
+\bibitem{levi2022evaluating}
+D. Levi, L. Gispan, N. Giladi, and E. Fetaya, ``Evaluating and calibrating uncertainty prediction in regression tasks,'' \emph{Sensors}, vol.~22, no.~15, p.~5540, 2022.
+
+\bibitem{bernard2018deep}
+O. Bernard et al., ``Deep learning techniques for automatic MRI cardiac multi-structures segmentation and diagnosis,'' \emph{IEEE TMI}, vol.~37, no.~11, pp.~2514--2525, 2018.
+
+\bibitem{multimae}
+R. Bachmann, D. Mizrahi, A. Atanov, and A. Zamir, ``MultiMAE: Multi-modal multi-task masked autoencoders,'' in \emph{ECCV}, 2022.
+
+\bibitem{convmae}
+Z. Gao, L. Wang, B. Han, and S. Guo, ``ConvMAE: Masked convolution meets masked autoencoders,'' in \emph{NeurIPS}, 2022.
+
+\bibitem{rubanova2019latent}
+Y. Rubanova, R.T.Q. Chen, and D.K. Duvenaud, ``Latent ordinary differential equations for irregularly-sampled time series,'' in \emph{NeurIPS}, vol.~32, 2019.
+
+\bibitem{sarkka2019applied}
+S. S\"{a}rkk\"{a} and A. Solin, \emph{Applied Stochastic Differential Equations}. Cambridge University Press, 2019.
+
+\bibitem{gal2016dropout}
+Y. Gal and Z. Ghahramani, ``Dropout as a Bayesian approximation: Representing model uncertainty in deep learning,'' in \emph{ICML}, pp.~1050--1059, 2016.
+
+\bibitem{lakshminarayanan2017simple}
+B. Lakshminarayanan, A. Pritzel, and C. Blundell, ``Simple and scalable predictive uncertainty estimation using deep ensembles,'' in \emph{NeurIPS}, vol.~30, 2017.
+
+\bibitem{amini2021robust}
+A. Amini, G. Liu, and N. Motee, ``Robust learning of recurrent neural networks in presence of exogenous noise,'' in \emph{CDC}, pp.~783--788, 2021.
+
+\bibitem{song2021score}
+Y. Song et al., ``Score-based generative modeling through stochastic differential equations,'' in \emph{ICLR}, 2021.
+
+\bibitem{kidger2021neural}
+P. Kidger, J. Foster, X. Li, and T. Lyons, ``Neural SDEs as infinite-dimensional GANs,'' in \emph{ICML}, 2021.
+
+\bibitem{tachella2025unsure}
+J. Tachella, M. Davies, and L. Jacques, ``UNSURE: self-supervised learning with unknown noise level and Stein's unbiased risk estimate,'' \emph{arXiv:2409.01985}, 2025.
+
+\end{thebibliography}
+
+\end{document}

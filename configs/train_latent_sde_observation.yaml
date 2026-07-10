@@ -1,0 +1,27 @@
+seed: 2026
+device: auto
+
+data:
+  h5: runs/selected/latent_observations_cinema_cunsure_mc.h5
+  sequence_index: runs/selected/sde_sequence_index.jsonl
+  min_length: 2
+  covariance: diag
+  normalize_time: true
+
+model:
+  hidden_dim: 512
+  num_layers: 2
+  time_invariant: false
+
+loss:
+  name: nll_diag
+  jitter: 0.000001
+
+optim:
+  epochs: 50
+  lr: 0.0001
+  weight_decay: 0.0001
+
+output:
+  run_dir: runs/latent_sde_observation
+  checkpoint_every: 10
