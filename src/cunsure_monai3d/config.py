@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import torch
 import yaml
 
 
@@ -31,3 +32,24 @@ def as_tuple_int(values: list[int] | tuple[int, ...], *, name: str) -> tuple[int
     if not isinstance(values, (list, tuple)) or not values:
         raise ValueError(f"{name} must be a non-empty list")
     return tuple(int(v) for v in values)
+
+
+def select_device(name: str | None = "auto") -> torch.device:
+    requested = str(name or "auto").lower()
+    if requested == "auto":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        if torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+    if requested == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("device=cuda was requested, but CUDA is not available")
+        return torch.device("cuda")
+    if requested == "mps":
+        if not torch.backends.mps.is_available():
+            raise RuntimeError("device=mps was requested, but Apple MPS is not available")
+        return torch.device("mps")
+    if requested == "cpu":
+        return torch.device("cpu")
+    raise ValueError(f"unsupported device: {name}")

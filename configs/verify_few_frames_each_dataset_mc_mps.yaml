@@ -1,0 +1,46 @@
+seed: 2026
+device: mps
+
+cunsure:
+  checkpoint: runs/cunsure_monai3d/best.pt
+
+foundation:
+  name: cinema
+  repo_path: ../CineMA
+  view: sax
+  pool: cls
+  cache_dir:
+
+jacobian:
+  method: mc_fd
+  num_probes: 64
+  fd_epsilon: 0.01
+  normalize_directions: true
+  chunk_size: 1
+
+verify:
+  frames_per_dataset: 3
+  sample_mode: even
+  split_4d: true
+  time_axis: -1
+  normalize: percentile
+  percentile_low: 1.0
+  percentile_high: 99.0
+  output_dir: runs/selected/verify_few_frames_each_dataset_mc_mps
+  save_outputs: true
+  exclude_substrings:
+    - _gt
+    - gt.nii
+    - label
+    - seg
+
+datasets:
+  - name: ACDC
+    globs:
+      - datasets/ACDC/database/testing/patient*/patient*_4d.nii.gz
+  - name: M&M1
+    globs:
+      - datasets/M&M1/Validation/*/*_sa.nii.gz
+  - name: MnM2
+    globs:
+      - datasets/MnM2/dataset/*/*_SA_CINE.nii.gz

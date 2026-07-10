@@ -1,0 +1,40 @@
+seed: 2026
+device: mps
+
+input:
+  globs:
+    - datasets/ACDC/database/testing/patient*/patient*_4d.nii.gz
+    - datasets/M&M1/Validation/*/*_sa.nii.gz
+    - datasets/MnM2/dataset/*/*_SA_CINE.nii.gz
+  exclude_substrings:
+    - _gt
+    - gt.nii
+    - label
+    - seg
+  split_4d: true
+  time_axis: -1
+  start_index: 0
+  limit:
+  normalize: percentile
+  percentile_low: 1.0
+  percentile_high: 99.0
+  output_dir: runs/selected/cinema_mc_covariance_all_datasets
+
+cunsure:
+  checkpoint: runs/cunsure_monai3d/best.pt
+
+foundation:
+  name: cinema
+  repo_path: ../CineMA
+  view: sax
+  pool: cls
+  cache_dir:
+
+jacobian:
+  method: mc_fd
+  num_probes: 8
+  fd_epsilon: 0.01
+  normalize_directions: true
+  chunk_size: 8
+  save_jacobian: false
+  save_raw_covariance: false

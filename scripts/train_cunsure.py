@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cunsure_monai3d.config import load_yaml, project_root, resolve_path
+from cunsure_monai3d.config import load_yaml, project_root, resolve_path, select_device
 from cunsure_monai3d.data import H5NoisyVolumeDataset
 from cunsure_monai3d.losses import MinimaxCUNSURE3DLoss
 from cunsure_monai3d.models import build_monai_unet3d
@@ -121,7 +121,7 @@ def main() -> None:
     root = project_root()
     cfg = load_yaml(root / args.config)
     set_seed(int(cfg["seed"]))
-    device = torch.device(cfg["device"] if torch.cuda.is_available() else "cpu")
+    device = select_device(cfg.get("device", "auto"))
 
     train_ds = H5NoisyVolumeDataset(resolve_path(cfg["data"]["train_h5"], root))
     val_ds = H5NoisyVolumeDataset(resolve_path(cfg["data"]["val_h5"], root))

@@ -203,6 +203,73 @@ def latent_covariance_from_full_jacobian(
     return (j @ sigma_j.T).detach().cpu()
 
 
+@torch.no_grad()
+def finite_difference_jvp(
+    encoder: nn.Module,
+    x: torch.Tensor,
+    z0: torch.Tensor,
+    direction: torch.Tensor,
+    *,
+    epsilon: float,
+    normalize_direction: bool,
+) -> torch.Tensor:
+    if normalize_direction:
+        norm = direction.flatten(start_dim=1).norm(dim=1).view(-1, 1, 1, 1, 1).clamp_min(1.0e-12)
+        step = direction / norm
+        scale = norm.flatten()[0]
+    else:
+        step = direction
+        scale = direction.new_tensor(1.0)
+    z_step = encoder(x + float(epsilon) * step)
+    return ((z_step - z0) / float(epsilon)).reshape(-1).detach().cpu() * scale.detach().cpu()
+
+
+@torch.no_grad()
+def latent_covariance_mc_finite_difference(
+    encoder: nn.Module,
+    x: torch.Tensor,
+    *,
+    eta: torch.Tensor,
+    device: torch.device,
+    num_probes: int,
+    fd_epsilon: float,
+    normalize_directions: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    r"""Estimate J Sigma J^T without materializing J.
+
+    For b ~ N(0,I), E[(J Sigma b)(J b)^T] = J Sigma J^T.
+    The two JVPs are estimated by finite differences, matching the Monte-Carlo
+    finite-difference style used by UNSURE/C-UNSURE.
+    """
+
+    z0 = encoder(x)
+    latent_dim = int(z0.numel())
+    cov = torch.zeros((latent_dim, latent_dim), dtype=torch.float32)
+    eta = eta.to(device)
+    for _ in range(int(num_probes)):
+        probe = torch.randn_like(x)
+        sigma_probe = circular_conv3d_depthwise(probe, eta)
+        j_probe = finite_difference_jvp(
+            encoder,
+            x,
+            z0,
+            probe,
+            epsilon=fd_epsilon,
+            normalize_direction=normalize_directions,
+        )
+        j_sigma_probe = finite_difference_jvp(
+            encoder,
+            x,
+            z0,
+            sigma_probe,
+            epsilon=fd_epsilon,
+            normalize_direction=normalize_directions,
+        )
+        cov.add_(torch.outer(j_sigma_probe, j_probe))
+    cov.div_(max(int(num_probes), 1))
+    return z0.detach().cpu(), symmetrize_covariance(cov)
+
+
 def symmetrize_covariance(covariance: torch.Tensor) -> torch.Tensor:
     return 0.5 * (covariance + covariance.T)
 

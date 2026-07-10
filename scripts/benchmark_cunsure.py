@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cunsure_monai3d.config import project_root, resolve_path
+from cunsure_monai3d.config import project_root, resolve_path, select_device
 from cunsure_monai3d.data import H5NoisyVolumeDataset
 from cunsure_monai3d.foundation import covariance_sanity_metrics, project_covariance_psd, symmetrize_covariance
 from cunsure_monai3d.losses import MinimaxCUNSURE3DLoss
@@ -148,11 +148,12 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=512)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--covariance", default=None)
+    parser.add_argument("--device", default="auto", choices=["auto", "cuda", "mps", "cpu"])
     args = parser.parse_args()
 
     root = project_root()
     set_seed(args.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = select_device(args.device)
     model, loss_fn, ckpt = load_checkpoint_model(resolve_path(args.checkpoint, root), device=device)
 
     dataset = H5NoisyVolumeDataset(resolve_path(args.h5, root))

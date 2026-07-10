@@ -10,7 +10,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cunsure_monai3d.config import load_yaml, project_root, resolve_path
+from cunsure_monai3d.config import load_yaml, project_root, resolve_path, select_device
 from cunsure_monai3d.foundation import (
     build_foundation,
     covariance_sanity_metrics,
@@ -37,7 +37,7 @@ def main() -> None:
 
     root = project_root()
     cfg = load_yaml(root / args.config)
-    device = torch.device(cfg["device"] if torch.cuda.is_available() else "cpu")
+    device = select_device(cfg.get("device", "auto"))
 
     ckpt_path = resolve_path(cfg["cunsure"]["checkpoint"], root)
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)

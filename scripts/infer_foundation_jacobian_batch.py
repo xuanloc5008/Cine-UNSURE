@@ -12,12 +12,13 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cunsure_monai3d.config import load_yaml, project_root, resolve_path
+from cunsure_monai3d.config import load_yaml, project_root, resolve_path, select_device
 from cunsure_monai3d.foundation import (
     build_foundation,
     covariance_sanity_metrics,
     full_jacobian_rows,
     latent_covariance_from_full_jacobian,
+    latent_covariance_mc_finite_difference,
     project_covariance_psd,
     symmetrize_covariance,
 )
@@ -82,7 +83,7 @@ def main() -> None:
 
     root = project_root()
     cfg = load_yaml(root / args.config)
-    device = torch.device(cfg["device"] if torch.cuda.is_available() else "cpu")
+    device = select_device(cfg.get("device", "auto"))
 
     ckpt_path = resolve_path(cfg["cunsure"]["checkpoint"], root)
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
@@ -126,6 +127,10 @@ def main() -> None:
     percentile_high = float(input_cfg.get("percentile_high", 99.0))
     time_axis = int(input_cfg.get("time_axis", -1))
     chunk_size = int(cfg["jacobian"]["chunk_size"])
+    method = str(cfg["jacobian"].get("method", "full")).lower()
+    num_probes = int(cfg["jacobian"].get("num_probes", 64))
+    fd_epsilon = float(cfg["jacobian"].get("fd_epsilon", 0.01))
+    normalize_directions = bool(cfg["jacobian"].get("normalize_directions", True))
     save_jacobian = bool(cfg["jacobian"].get("save_jacobian", False))
     save_raw_covariance = bool(cfg["jacobian"].get("save_raw_covariance", False))
 
@@ -139,13 +144,27 @@ def main() -> None:
             percentile_low=percentile_low,
             percentile_high=percentile_high,
         ).to(device)
-        z, jac = full_jacobian_rows(encoder, x, chunk_size=chunk_size)
-        sigma_z = latent_covariance_from_full_jacobian(
-            jac,
-            input_shape=tuple(x.shape[1:]),
-            eta=eta,
-            device=device,
-        )
+        jac = None
+        if method == "full":
+            z, jac = full_jacobian_rows(encoder, x, chunk_size=chunk_size)
+            sigma_z = latent_covariance_from_full_jacobian(
+                jac,
+                input_shape=tuple(x.shape[1:]),
+                eta=eta,
+                device=device,
+            )
+        elif method == "mc_fd":
+            z, sigma_z = latent_covariance_mc_finite_difference(
+                encoder,
+                x,
+                eta=eta,
+                device=device,
+                num_probes=num_probes,
+                fd_epsilon=fd_epsilon,
+                normalize_directions=normalize_directions,
+            )
+        else:
+            raise ValueError(f"unsupported jacobian method: {method}")
         sigma_z_sym = symmetrize_covariance(sigma_z)
         sigma_z_psd = project_covariance_psd(sigma_z_sym)
 
@@ -164,7 +183,7 @@ def main() -> None:
         if save_raw_covariance:
             payload["latent_covariance"] = sigma_z
             payload["latent_covariance_sym"] = sigma_z_sym
-        if save_jacobian:
+        if save_jacobian and jac is not None:
             payload["jacobian"] = jac
         torch.save(payload, out_dir / out_name)
 
@@ -174,8 +193,10 @@ def main() -> None:
             "dataset": dataset_name,
             "source_path": str(ref.path),
             "time_index": -1 if ref.time_index is None else int(ref.time_index),
+            "method": method,
+            "num_probes": num_probes if method == "mc_fd" else None,
             "latent_dim": int(z.numel()),
-            "jacobian_shape": list(jac.shape),
+            "jacobian_shape": None if jac is None else list(jac.shape),
             "covariance_psd": covariance_sanity_metrics(sigma_z_psd),
         }
         with summary_path.open("a", encoding="utf-8") as f:
