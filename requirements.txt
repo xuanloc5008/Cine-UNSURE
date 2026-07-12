@@ -11,3 +11,6 @@ huggingface_hub
 safetensors
 omegaconf
 hydra-core
+imageio
+matplotlib
+pillow
