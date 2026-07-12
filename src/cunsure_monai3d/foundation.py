@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import torch
 from torch import nn
@@ -212,6 +212,7 @@ def finite_difference_jvp(
     *,
     epsilon: float,
     normalize_direction: bool,
+    difference_scheme: Literal["forward", "central"] = "forward",
 ) -> torch.Tensor:
     if normalize_direction:
         norm = direction.flatten(start_dim=1).norm(dim=1).view(-1, 1, 1, 1, 1).clamp_min(1.0e-12)
@@ -220,8 +221,44 @@ def finite_difference_jvp(
     else:
         step = direction
         scale = direction.new_tensor(1.0)
-    z_step = encoder(x + float(epsilon) * step)
-    return ((z_step - z0) / float(epsilon)).reshape(-1).detach().cpu() * scale.detach().cpu()
+    if difference_scheme == "forward":
+        derivative = (encoder(x + float(epsilon) * step) - z0) / float(epsilon)
+    elif difference_scheme == "central":
+        z_plus = encoder(x + float(epsilon) * step)
+        z_minus = encoder(x - float(epsilon) * step)
+        derivative = (z_plus - z_minus) / (2.0 * float(epsilon))
+    else:
+        raise ValueError(f"unsupported finite-difference scheme: {difference_scheme}")
+    return derivative.reshape(-1).detach().cpu() * scale.detach().cpu()
+
+
+@torch.no_grad()
+def finite_difference_jvp_batch(
+    encoder: nn.Module,
+    x: torch.Tensor,
+    z0: torch.Tensor,
+    direction: torch.Tensor,
+    *,
+    epsilon: float,
+    normalize_direction: bool,
+    difference_scheme: Literal["forward", "central"] = "forward",
+) -> torch.Tensor:
+    if normalize_direction:
+        norm = direction.flatten(start_dim=1).norm(dim=1).view(-1, 1, 1, 1, 1).clamp_min(1.0e-12)
+        step = direction / norm
+        scale = norm.flatten().view(-1, 1)
+    else:
+        step = direction
+        scale = direction.new_ones((direction.shape[0], 1))
+    if difference_scheme == "forward":
+        derivative = (encoder(x + float(epsilon) * step) - z0) / float(epsilon)
+    elif difference_scheme == "central":
+        z_plus = encoder(x + float(epsilon) * step)
+        z_minus = encoder(x - float(epsilon) * step)
+        derivative = (z_plus - z_minus) / (2.0 * float(epsilon))
+    else:
+        raise ValueError(f"unsupported finite-difference scheme: {difference_scheme}")
+    return (derivative * scale).detach().cpu()
 
 
 @torch.no_grad()
@@ -234,10 +271,13 @@ def latent_covariance_mc_finite_difference(
     num_probes: int,
     fd_epsilon: float,
     normalize_directions: bool = True,
+    probe_batch_size: int = 1,
+    probe_distribution: Literal["gaussian", "rademacher"] = "gaussian",
+    difference_scheme: Literal["forward", "central"] = "forward",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     r"""Estimate J Sigma J^T without materializing J.
 
-    For b ~ N(0,I), E[(J Sigma b)(J b)^T] = J Sigma J^T.
+    For E[b b^T] = I, E[(J Sigma b)(J b)^T] = J Sigma J^T.
     The two JVPs are estimated by finite differences, matching the Monte-Carlo
     finite-difference style used by UNSURE/C-UNSURE.
     """
@@ -246,26 +286,42 @@ def latent_covariance_mc_finite_difference(
     latent_dim = int(z0.numel())
     cov = torch.zeros((latent_dim, latent_dim), dtype=torch.float32)
     eta = eta.to(device)
-    for _ in range(int(num_probes)):
-        probe = torch.randn_like(x)
+    probe_batch_size = max(int(probe_batch_size), 1)
+    if probe_distribution not in {"gaussian", "rademacher"}:
+        raise ValueError(f"unsupported probe distribution: {probe_distribution}")
+    if difference_scheme not in {"forward", "central"}:
+        raise ValueError(f"unsupported finite-difference scheme: {difference_scheme}")
+    remaining = int(num_probes)
+    while remaining > 0:
+        batch_size = min(probe_batch_size, remaining)
+        probe_shape = (batch_size, *x.shape[1:])
+        if probe_distribution == "gaussian":
+            probe = torch.randn(probe_shape, device=device, dtype=x.dtype)
+        else:
+            probe = torch.empty(probe_shape, device=device, dtype=x.dtype)
+            probe.bernoulli_(0.5).mul_(2.0).sub_(1.0)
         sigma_probe = circular_conv3d_depthwise(probe, eta)
-        j_probe = finite_difference_jvp(
+        j_probe = finite_difference_jvp_batch(
             encoder,
             x,
             z0,
             probe,
             epsilon=fd_epsilon,
             normalize_direction=normalize_directions,
+            difference_scheme=difference_scheme,
         )
-        j_sigma_probe = finite_difference_jvp(
+        j_sigma_probe = finite_difference_jvp_batch(
             encoder,
             x,
             z0,
             sigma_probe,
             epsilon=fd_epsilon,
             normalize_direction=normalize_directions,
+            difference_scheme=difference_scheme,
         )
-        cov.add_(torch.outer(j_sigma_probe, j_probe))
+        contribution = j_sigma_probe.T @ j_probe
+        cov.add_(symmetrize_covariance(contribution))
+        remaining -= batch_size
     cov.div_(max(int(num_probes), 1))
     return z0.detach().cpu(), symmetrize_covariance(cov)
 

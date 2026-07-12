@@ -32,8 +32,8 @@ class LocalNCC3D(nn.Module):
         )
 
     def forward(self, fixed: Tensor, warped: Tensor) -> Tensor:
-        fixed = fixed.double()
-        warped = warped.double()
+        fixed = fixed.float()
+        warped = warped.float()
         fixed2 = fixed * fixed
         warped2 = warped * warped
         product = fixed * warped

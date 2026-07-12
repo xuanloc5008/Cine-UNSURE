@@ -1,0 +1,54 @@
+seed: 2026
+device: auto
+
+data:
+  h5: runs/selected/latent_observations_cinema_score_cunsure_roi.h5
+  sequence_index: runs/selected/sde_sequence_index_roi.jsonl
+  min_length: 2
+  covariance: diag
+  normalize_time: true
+  time_axis: -1
+  volume_size: [16, 96, 96]
+  normalize: percentile
+  percentile_low: 1.0
+  percentile_high: 99.0
+  roi_mask_crop: true
+  roi_mask_margin: [0, 16, 16]
+  require_roi_mask: false
+  cache_data: false
+  num_workers: 16
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+  # Use this when latent H5 source_path was generated on another machine.
+  # source_path_remap:
+  #   - from: /workspace/Cine-UNSURE/datasets
+  #     to: datasets
+
+model:
+  image_shape: [16, 96, 96]
+  channels: [16, 32, 32, 16]
+  kernel_size: 3
+  velocity_scale: 4.0
+  smoothing_kernel: 3
+  ode_steps_per_interval: 2
+  zero_init_velocity: true
+
+loss:
+  ncc_win: 9
+  lambda_j: 2.5
+  lambda_v: 0.00005
+  lambda_df: 0.05
+
+optim:
+  epochs: 100
+  lr: 0.00005
+  weight_decay: 0.0005
+  grad_clip: 1.0
+  early_stopping_patience: 10
+  early_stopping_min_delta: 0.00001
+
+output:
+  run_dir: runs/nodeo_mean_deformation_roi
+  checkpoint_every: 10
+

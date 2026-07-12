@@ -36,7 +36,12 @@ def main() -> None:
             "keys": list(h5.keys()),
             "attrs": {k: (v.tolist() if hasattr(v, "tolist") else v) for k, v in h5.attrs.items()},
             "z_shape": list(h5["z"].shape),
-            "covariance_shape": list(h5["latent_covariance_psd"].shape),
+            "covariance_key": "latent_covariance_diag" if "latent_covariance_diag" in h5 else "latent_covariance_psd",
+            "covariance_shape": list(
+                h5["latent_covariance_diag"].shape
+                if "latent_covariance_diag" in h5
+                else h5["latent_covariance_psd"].shape
+            ),
             "dataset_counts": dict(Counter(datasets)),
             "trace": {
                 "min": float(trace.min()) if trace.size else 0.0,
@@ -50,15 +55,21 @@ def main() -> None:
         if n:
             sample_indices = random.sample(range(n), min(args.random_checks, n))
             for idx in sample_indices:
-                cov = torch.from_numpy(h5["latent_covariance_psd"][idx]).float()
-                cov = 0.5 * (cov + cov.T)
-                eig_min = float(torch.linalg.eigvalsh(cov).min())
+                if "latent_covariance_diag" in h5:
+                    diagonal = torch.from_numpy(h5["latent_covariance_diag"][idx]).float()
+                    trace_value = float(diagonal.sum())
+                    eig_min = float(diagonal.min())
+                else:
+                    cov = torch.from_numpy(h5["latent_covariance_psd"][idx]).float()
+                    cov = 0.5 * (cov + cov.T)
+                    trace_value = float(torch.trace(cov))
+                    eig_min = float(torch.linalg.eigvalsh(cov).min())
                 checks.append(
                     {
                         "index": idx,
                         "dataset": decode_h5_string(h5["dataset"][idx]),
                         "time_index": int(h5["time_index"][idx]),
-                        "trace": float(torch.trace(cov)),
+                        "trace": trace_value,
                         "eig_min": eig_min,
                     }
                 )
@@ -74,7 +85,7 @@ def main() -> None:
         "by_dataset": dict(Counter(ref.dataset for ref in refs)),
     }
 
-    ds = LatentObservationSequenceDataset(h5_path, min_length=args.min_length, covariance="full")
+    ds = LatentObservationSequenceDataset(h5_path, min_length=args.min_length, covariance="diag")
     if len(ds):
         sample = ds[0]
         report["first_sequence"] = {

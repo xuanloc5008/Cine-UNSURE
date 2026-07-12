@@ -13,6 +13,16 @@ def decode_h5_string(value: str | bytes) -> str:
     return value.decode("utf-8") if isinstance(value, bytes) else str(value)
 
 
+def load_latent_covariance(h5: h5py.File, indices: list[int], *, mode: Literal["full", "diag"]) -> torch.Tensor:
+    if "latent_covariance_diag" in h5:
+        diagonal = torch.from_numpy(h5["latent_covariance_diag"][indices]).float()
+        return diagonal if mode == "diag" else torch.diag_embed(diagonal)
+    if "latent_covariance_psd" in h5:
+        covariance = torch.from_numpy(h5["latent_covariance_psd"][indices]).float()
+        return covariance.diagonal(dim1=-2, dim2=-1) if mode == "diag" else covariance
+    raise KeyError("latent H5 must contain latent_covariance_diag or latent_covariance_psd")
+
+
 @dataclass(frozen=True)
 class SequenceRef:
     source_path: str
@@ -72,9 +82,7 @@ class LatentObservationSequenceDataset(Dataset[dict[str, object]]):
         indices = list(ref.indices)
         with h5py.File(self.h5_path, "r") as h5:
             z = torch.from_numpy(h5["z"][indices]).float()
-            covariance = torch.from_numpy(h5["latent_covariance_psd"][indices]).float()
-        if self.covariance == "diag":
-            covariance = covariance.diagonal(dim1=-2, dim2=-1)
+            covariance = load_latent_covariance(h5, indices, mode=self.covariance)
 
         raw_times = torch.tensor(ref.time_indices, dtype=torch.float32)
         if self.normalize_time:

@@ -1,2 +1,1 @@
-"""MONAI 3D U-Net + minimax C-UNSURE training utilities."""
-
+"""Score C-UNSURE, CineMA covariance, and cardiac deformation utilities."""

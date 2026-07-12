@@ -17,7 +17,7 @@ from cunsure_monai3d.deformation_data import DeformationSequenceDataset
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/train_nodeo_sde_deformation.yaml")
+    parser.add_argument("--config", default="configs/train_nodeo_mean_deformation.yaml")
     parser.add_argument("--num-sequences", type=int, default=5)
     parser.add_argument("--random", action="store_true")
     args = parser.parse_args()
@@ -25,7 +25,8 @@ def main() -> None:
     root = project_root()
     cfg = load_yaml(root / args.config)
     data_cfg = cfg["data"]
-    deformation_shape = as_tuple_int(cfg["model"]["deformation_shape"], name="deformation_shape")
+    image_shape_key = "image_shape" if "image_shape" in cfg["model"] else "deformation_shape"
+    deformation_shape = as_tuple_int(cfg["model"][image_shape_key], name=image_shape_key)
 
     dataset = DeformationSequenceDataset(
         resolve_path(data_cfg["h5"], root),
@@ -40,6 +41,10 @@ def main() -> None:
         percentile_low=float(data_cfg.get("percentile_low", 1.0)),
         percentile_high=float(data_cfg.get("percentile_high", 99.0)),
         source_path_remap=list(data_cfg.get("source_path_remap", [])),
+        cache_data=False,
+        roi_mask_crop=bool(data_cfg.get("roi_mask_crop", False)),
+        roi_mask_margin=as_tuple_int(data_cfg.get("roi_mask_margin", [0, 12, 12]), name="roi_mask_margin"),
+        require_roi_mask=bool(data_cfg.get("require_roi_mask", False)),
     )
     if len(dataset) == 0:
         raise ValueError("no deformation sequences found")

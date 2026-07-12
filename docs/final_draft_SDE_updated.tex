@@ -37,7 +37,7 @@ Draft Manuscript \\
 \maketitle
 
 \begin{abstract}
-Quantifying uncertainty in cardiac deformation tracking is crucial for clinically reliable cardiac function assessment, yet most learning-based pipelines provide only point estimates of deformation fields and downstream metrics such as ejection fraction (EF), wall motion, and myocardial strain. We propose an uncertainty-aware neural differential registration framework for cine cardiac MRI. The model learns a continuous-time deformation trajectory from a reference cardiac frame to all observed frames using a Neural SDE-RNN, while analytically propagating observation uncertainty estimated by C-UNSURE through a frozen CineMA encoder, a covariance-aware recurrent update, and a deformation decoder. The deformation field is trained with a NODEO-style registration objective: warped-image similarity, fold prevention, motion magnitude control, and spatial/temporal smoothness regularization. CineMA serves as a frozen latent observation model, and C-UNSURE supplies frame-specific image-noise covariance that is propagated into latent observation covariance without assuming a known scalar noise level. The resulting hidden-state covariance is transformed into deformation-field covariance and subsequently into uncertainty bands for clinical metrics. Thus, the proposed framework targets not only accurate cardiac motion estimation but also clinically meaningful uncertainty propagation from image noise to deformation uncertainty and finally to biomarker confidence intervals. We validate the framework on cardiac cine-MRI sequences by assessing registration accuracy, deformation regularity, calibration of deformation uncertainty, and coverage of clinical metric prediction bands.
+Quantifying uncertainty in cardiac deformation tracking is crucial for clinically reliable cardiac function assessment, yet most learning-based pipelines provide only point estimates of deformation fields and downstream metrics such as ejection fraction (EF), wall motion, and myocardial strain. We propose an uncertainty-aware neural differential registration framework for cine cardiac MRI. The model learns a continuous-time deformation trajectory from a reference cardiac frame to all observed frames using a Neural SDE-RNN, while analytically propagating observation uncertainty estimated by score-based C-UNSURE through a frozen CineMA encoder, a covariance-aware recurrent update, and a deformation decoder. The deformation field is trained with a NODEO-style registration objective: warped-image similarity, fold prevention, motion magnitude control, and spatial/temporal smoothness regularization. CineMA serves as a frozen latent observation model. A score network is first trained self-supervised on noisy cine frames and then frozen; C-UNSURE uses its score to compute a closed-form, frame-specific image-noise kernel without assuming a known scalar noise level. This image-space covariance is propagated into latent observation covariance. The resulting hidden-state covariance is transformed into deformation-field covariance and subsequently into uncertainty bands for clinical metrics. Thus, the proposed framework targets not only accurate cardiac motion estimation but also clinically meaningful uncertainty propagation from image noise to deformation uncertainty and finally to biomarker confidence intervals. We validate the framework on cardiac cine-MRI sequences by assessing registration accuracy, deformation regularity, calibration of deformation uncertainty, and coverage of clinical metric prediction bands.
 \end{abstract}
 
 \textbf{Keywords:} Neural Stochastic Differential Equations, Uncertainty Quantification, Cardiac Function, Ejection Fraction, Prediction Bands, Recurrent Neural Networks
@@ -62,7 +62,7 @@ In this paper, we unify and extend these lines of work into a single framework f
 
     \item \textbf{NODEO-style deformation learning.} The dense deformation decoder is trained by image registration losses rather than by latent supervision alone. The objective combines local normalized cross-correlation between warped and target frames with Jacobian-determinant, magnitude, spatial smoothness, and temporal smoothness regularization.
 
-    \item \textbf{CineMA and C-UNSURE as an observation-uncertainty model.} We employ the pretrained CineMA encoder as a frozen latent observation model and use C-UNSURE to estimate frame-specific image noise without assuming a known scalar noise level. This image-space covariance is propagated through the frozen encoder to obtain latent observation covariance.
+    \item \textbf{CineMA and score-based C-UNSURE as an observation-uncertainty model.} We employ the pretrained CineMA encoder as a frozen latent observation model. A self-supervised score network is trained once on noisy cine frames, after which the closed-form C-UNSURE solution estimates a distinct image-noise kernel for every frame. This image-space covariance is propagated through the frozen encoder to obtain frame-specific latent observation covariance.
 
     \item \textbf{Analytical uncertainty propagation to clinical metrics.} We derive closed-form expressions for propagating the deformation-field covariance through the nonlinear maps that compute EF, regional wall motion, and myocardial strain. The result is a prediction band for each clinical metric that is a direct, deterministic consequence of the upstream SDE-RNN covariance---not a statistical construct requiring calibration data.
 
@@ -160,22 +160,48 @@ Cine-MRI noise is most naturally described in the image domain. After parallel r
     \qquad \epsilon_k \sim \mathcal{N}(\bm{0}, \bm{I}),
     \label{eq:img_noise}
 \end{equation}
-where $\ast$ denotes spatial convolution and both the magnitude and the correlation structure of $\sigma$ are unknown. C-UNSURE estimates this structure by relaxing the zero-divergence constraint of cross-validation to a \emph{zero expected divergence} constraint over a bounded correlation support $\pm r$ taps, solving
+where $\ast$ denotes spatial convolution and both the magnitude and the correlation structure of $\sigma$ are unknown. C-UNSURE estimates this structure by relaxing the zero-divergence constraint of cross-validation to a \emph{zero expected divergence} constraint over a bounded three-dimensional correlation support $\mathcal{D}_r=\{-r,\ldots,r\}^{3}$, solving
 \begin{equation}
-    \min_{f}\ \max_{\eta}\
-    \E_{I}\!\left[
-        \|f(I) - I\|^2
-        + \sum_{j=-r}^{r} \eta_j \sum_{i}
-          \frac{\partial f_i}{\partial I_{(i+j)\bmod n}}(I)
-    \right].
+\begin{aligned}
+    \min_{f}\ \max_{\eta}\ \E_{I}\!\Bigg[
+        &\|f(I) - I\|^2 \\
+        &+ \sum_{\bm{\delta}\in\mathcal{D}_r} \eta_{\bm{\delta}}
+        \sum_{i}\frac{\partial f_i(I)}
+        {\partial I_{(i+\bm{\delta})\bmod n}}
+    \Bigg].
+\end{aligned}
     \label{eq:cunsure}
 \end{equation}
-The optimal multipliers admit the closed form $\hat{\eta}_k = \mathcal{F}^{-1}\!\big(1 / \mathcal{F} h_k\big)$, where $h_k$ is the $\pm r$-tap autocorrelation of the score $\nabla \log p_I$ and $\mathcal{F}$ is the discrete Fourier transform. The estimated image-space noise covariance is the corresponding circulant matrix,
+The original UNSURE formulation offers two implementations: joint minimax learning of $f$ and $\eta$, or a score-based closed-form solution. We adopt the latter because it permits frame-specific noise estimation without test-time optimization. We first train a score network $s_{\varphi}(I)\approx\nabla_I\log p_I(I)$ using only noisy cine frames and the AR-DAE objective used by UNSURE,
+\begin{equation}
+    \min_{\varphi}\
+    \E_{I,\bm{b},\tau}
+    \left\|\bm{b}+\tau s_{\varphi}(I+\tau\bm{b})\right\|_2^2,
+    \qquad \bm{b}\sim\mathcal{N}(\bm{0},\bm{I}).
+    \label{eq:score_training}
+\end{equation}
+The perturbation scale is annealed during score training as in~\cite{tachella2025unsure}. No clean image or known noise level is required. Once trained, $s_{\varphi}$ is frozen for covariance precomputation and deformation training.
+
+For frame $I_k$, let $\bm{g}_k=s_{\varphi}(I_k)$. Under the same local-stationarity assumption as C-UNSURE, the expectation in the score autocorrelation can be estimated image-wise by spatial averaging,
+\begin{equation}
+    h_k(\bm{\delta})
+    =\frac{1}{N_k}\sum_i
+    g_{k,i}\,g_{k,(i+\bm{\delta})\bmod n},
+    \qquad \bm{\delta}\in\mathcal{D}_r.
+    \label{eq:frame_score_autocorr}
+\end{equation}
+The C-UNSURE theorem then gives the frame-specific multiplier
+\begin{equation}
+    \hat{\eta}_k
+    =\mathcal{F}^{-1}\!\left(\frac{1}{\mathcal{F}h_k}\right),
+    \label{eq:frame_eta_closed_form}
+\end{equation}
+where $\mathcal{F}$ is the discrete Fourier transform. In implementation, a small positive spectral floor is applied before inversion. The estimated image-space noise covariance is the corresponding circulant matrix,
 \begin{equation}
     \bm{\Sigma}_k^{\text{img}} = \operatorname{circ}(\hat{\eta}_k).
     \label{eq:img_cov}
 \end{equation}
-Crucially, only an \emph{upper bound} on the correlation radius $r$ is required; the per-direction variances need not be specified. Over-specifying $r$ incurs only a mild penalty, whereas under-specifying it degrades performance, so $r$ may be chosen generously. We estimate $\hat{\eta}_k$ per frame, allowing $\bm{\Sigma}_k^{\text{img}}$ to track noise that varies across slices and subjects.
+Crucially, only an \emph{upper bound} on the correlation radius $r$ is required; the per-direction variances need not be specified. Over-specifying $r$ incurs only a mild penalty, whereas under-specifying it degrades performance. Equations~\eqref{eq:frame_score_autocorr}--\eqref{eq:frame_eta_closed_form} make $\hat{\eta}_k$ explicitly frame-dependent, allowing $\bm{\Sigma}_k^{\text{img}}$ to track noise that varies across cardiac time, slices, subjects, and acquisition domains. This differs from minimax C-UNSURE with a single population-level multiplier, which we retain as a baseline.
 
 \paragraph{Propagation through the frozen encoder.}
 Because the CineMA encoder $\mathcal{E}_{\text{CineMA}}$ is frozen and the acquisition noise is small, we linearise the encoder about $I_k$:
@@ -205,13 +231,13 @@ The Jacobian $\bm{J}_{\mathcal{E}}$ is far too large to materialise, but the tar
         \delta\bm{z}^{(s)} \big(\delta\bm{z}^{(s)}\big)^{\top},
     \label{eq:mc_jvp}
 \end{align}
-where $\tau$ is a small constant and $\bm{\kappa}_k$ is the square-root kernel of $\bm{\Sigma}_k^{\text{img}}$, obtained from $\hat{\eta}_k$ by an elementwise square root in the Fourier domain so that correlated probes can be drawn at the cost of a single FFT. Each probe requires only one forward pass through the frozen encoder. For large $d$, $\hat{\bm{\Sigma}}_k$ may be retained in full, low-rank, or block-diagonal form, consistent with the block-diagonal approximation already adopted for $\bm{R}_k$ in Eq.~\eqref{eq:output_cov}.
+where $\tau$ is a small constant. To guarantee a valid sampling covariance under finite-sample score error, we symmetrise $\hat{\eta}_k$, transform it to the Fourier domain, and clamp its real spectrum to a small positive floor. The square-root kernel $\bm{\kappa}_k$ is obtained by taking the elementwise square root of this non-negative spectrum and applying the inverse Fourier transform. Correlated probes can therefore be drawn with one FFT, and every outer product in Eq.~\eqref{eq:mc_jvp} is positive semidefinite by construction. Each probe requires one perturbed forward pass through the frozen encoder. For large $d$, $\hat{\bm{\Sigma}}_k$ may be retained in full, low-rank, or block-diagonal form, consistent with the block-diagonal approximation already adopted for $\bm{R}_k$ in Eq.~\eqref{eq:output_cov}.
 
 \paragraph{Relation to self-calibration.}
 The data-driven $\bm{\Sigma}_k$ and the innovation-based mechanism of Section~\ref{sec:calibration} address complementary sources of uncertainty. The adaptive scaling $\bm{Q}_k = \bar{\rho}_k \bm{Q}_0$~\eqref{eq:adaptive_Q} adjusts the \emph{process} (epistemic) noise by a single scalar and therefore cannot alter the \emph{structure} of the observation covariance. C-UNSURE supplies precisely that structure---an anisotropic, spatially correlated estimate of the \emph{observation} (aleatoric) noise---grounded in the noise physics rather than in a reconstruction-error heuristic. Together they close the loop on both noise terms in Eq.~\eqref{eq:adaptive_cov_prop}, and the estimate $\hat{\bm{\Sigma}}_k$ replaces $\bm{\Sigma}_k$ in Eqs.~\eqref{eq:cov_update} and~\eqref{eq:innov_cov} without any other modification to the pipeline.
 
 \paragraph{Remarks.}
-Three points warrant attention. First, the C-UNSURE multiplier is a \emph{conservative} estimate of the noise level ($\hat{\eta} \ge \sigma^2$), so the resulting bands are, if anything, slightly wider---a desirable property for clinical uncertainty quantification. Second, the validity of the encoder linearisation~\eqref{eq:enc_lin} should be checked at the operating noise level by comparing $\|\bm{J}_{\mathcal{E}}\bm{n}\|$ against second-order terms, mirroring the linearisation caveat discussed in Section~\ref{sec:discussion}. Third, Eq.~\eqref{eq:img_cov} assumes stationary (circulant) noise across the image; where g-factor variation makes the noise spatially non-stationary, $\bm{\Sigma}_k$ can be estimated block-wise per region, or with the diagonal C-UNSURE parameterisation $\bm{\Sigma}_\eta = \diag(\bm{\eta})$, which permits a distinct unknown noise level per location while remaining more expressive than cross-validation.
+Three points warrant attention. First, UNSURE proves conservativeness for the scalar isotropic multiplier; the same elementwise ordering should not be asserted for a general correlated covariance. We therefore assess calibration empirically through innovations and coverage rather than assuming that every correlated estimate is conservative. Second, the validity of the encoder linearisation~\eqref{eq:enc_lin} should be checked at the operating noise level by comparing $\|\bm{J}_{\mathcal{E}}\bm{n}\|$ against second-order terms, mirroring the linearisation caveat discussed in Section~\ref{sec:discussion}. Third, Eq.~\eqref{eq:img_cov} assumes stationary (circulant) noise within the region used to compute Eq.~\eqref{eq:frame_score_autocorr}; where g-factor variation makes the noise spatially non-stationary, $\bm{\Sigma}_k$ can be estimated block-wise per region, or with the diagonal C-UNSURE parameterisation $\bm{\Sigma}_\eta = \diag(\bm{\eta})$.
 
 \subsection{Neural SDE for Cardiac Deformation}
 \label{sec:neural_sde_deformation}
@@ -239,13 +265,12 @@ Directly evolving a dense deformation vector in $\R^{3N_v}$ is expensive and mak
 \end{equation}
 The hidden state follows an It\^{o} Neural SDE between observed frames,
 \begin{equation}
+\begin{aligned}
     d\bm{h}(t)
-    =
-    \bm{f}_\theta(\bm{h}(t),t)\,dt
-    +
-    \bm{G}_\theta(\bm{h}(t),t)\,d\bm{W}_t,
-    \qquad
-    d\bm{W}_t\sim\mathcal{N}(\bm{0},\bm{Q}_0\,dt),
+    &= \bm{f}_\theta(\bm{h}(t),t)\,dt
+    + \bm{G}_\theta(\bm{h}(t),t)\,d\bm{W}_t, \\
+    d\bm{W}_t &\sim\mathcal{N}(\bm{0},\bm{Q}_0\,dt),
+\end{aligned}
     \label{eq:sde}
 \end{equation}
 where $\bm{f}_\theta$ captures the deterministic cardiac dynamics and $\bm{G}_\theta$ controls process uncertainty. This compact formulation is the one used for analytical covariance propagation, while the dense deformation is still learned by image registration losses through Eq.~\eqref{eq:warp_convention}.
@@ -360,7 +385,7 @@ where $\bm{c}_{k,i}$ is the $i$-th row of $\bm{C}_k$, and $\bm{C}_k^{(\bm{x})}\i
 \subsection{Training Objective for Deformation Fields}
 \label{sec:deformation_training_objective}
 
-The deformation field is learned without ground-truth displacement labels using the same principle as NODEO: optimize a differentiable registration objective between the warped reference frame and the observed target frame, while regularizing the transformation. CineMA and C-UNSURE are frozen and are used to provide latent observations and observation uncertainty for the CVRNN/covariance update; they do not replace the image registration objective. The trainable components are the SDE drift $\bm{f}_\theta$, diffusion $\bm{G}_\theta$, CVRNN update $v_\omega$, latent observation decoder $o_\chi$ used for innovation monitoring, and deformation decoder $c_\psi$.
+The deformation field is learned without ground-truth displacement labels using the same principle as NODEO: optimize a differentiable registration objective between the warped reference frame and the observed target frame, while regularizing the transformation. CineMA and the pretrained score network are frozen and are used to provide latent observations and frame-specific C-UNSURE observation uncertainty for the CVRNN/covariance update; they do not replace the image registration objective. The trainable components at this stage are the SDE drift $\bm{f}_\theta$, diffusion $\bm{G}_\theta$, CVRNN update $v_\omega$, latent observation decoder $o_\chi$ used for innovation monitoring, and deformation decoder $c_\psi$.
 
 \paragraph{Image registration loss.}
 For each observed frame, the decoded deformation warps the reference frame:
@@ -421,7 +446,7 @@ The latent CineMA observation and C-UNSURE covariance are used in the CVRNN upda
 \subsection{Training Procedure}
 \label{sec:training_procedure}
 
-Training proceeds in four stages. First, each cine frame is encoded by the frozen CineMA encoder, C-UNSURE estimates the image-noise kernel $\hat{\eta}_k$, and Eq.~\eqref{eq:mc_jvp} produces $\bm{\Sigma}_k$. Second, frames from the same patient and view are ordered by cardiac time, forming samples $\{I_k,\tilde{\bm{z}}_k,\bm{\Sigma}_k,t_k\}_{k=0}^{K}$. Third, the model alternates SDE propagation and CVRNN updates, decodes $\widehat{\bm{\phi}}_k$, warps the reference frame, and optimizes the NODEO-style loss in Eq.~\eqref{eq:l_total}. Fourth, validation monitors image similarity, Dice/MCD on annotated frames when labels are available, folding rate $\det\nabla\phi_k\leq0$, and the normalized innovation ratio in Section~\ref{sec:calibration}. The checkpoint is selected by registration quality subject to stable deformation regularity and calibrated innovations.
+Training and precomputation proceed in five stages. First, the score network $s_{\varphi}$ is trained once on noisy cine frames with Eq.~\eqref{eq:score_training}, without clean targets or known noise levels, and is then frozen. Second, each frame is passed through the frozen score network to compute $\hat{\eta}_k$ by Eqs.~\eqref{eq:frame_score_autocorr}--\eqref{eq:frame_eta_closed_form}; the frozen CineMA encoder supplies $\tilde{\bm{z}}_k$, and Eq.~\eqref{eq:mc_jvp} produces $\bm{\Sigma}_k$. Third, frames from the same patient and view are ordered by cardiac time, forming samples $\{I_k,\tilde{\bm{z}}_k,\bm{\Sigma}_k,t_k\}_{k=0}^{K}$. Fourth, the model alternates SDE propagation and CVRNN updates, decodes $\widehat{\bm{\phi}}_k$, warps the reference frame, and optimizes the NODEO-style loss in Eq.~\eqref{eq:l_total}; neither CineMA nor $s_{\varphi}$ is updated at this stage. Fifth, validation monitors image similarity, Dice/MCD on annotated frames when labels are available, folding rate $\det\nabla\phi_k\leq0$, the normalized innovation ratio, and empirical coverage of uncertainty intervals. The checkpoint is selected by registration quality subject to stable deformation regularity and calibrated innovations.
 
 %==============================================================
 \section{From Deformation Uncertainty to Clinical Metric Prediction Bands}
@@ -614,13 +639,14 @@ Algorithm~\ref{alg:framework} summarizes the complete inference pipeline.
 \caption{Uncertainty-Aware Cardiac Assessment}
 \label{alg:framework}
 \begin{algorithmic}[1]
-\REQUIRE Cine-MRI sequence $\{I_k, t_k\}_{k=0}^{K}$, frozen CineMA encoder $\mathcal{E}$, trained networks $\bm{f}_\theta, \bm{G}_\theta, v_\omega, o_\chi, c_\psi$
+\REQUIRE Cine-MRI sequence $\{I_k, t_k\}_{k=0}^{K}$, frozen CineMA encoder $\mathcal{E}$, frozen score network $s_{\varphi}$, trained networks $\bm{f}_\theta, \bm{G}_\theta, v_\omega, o_\chi, c_\psi$
 \STATE \textbf{Encode:} $\bm{z}_k \gets \mathcal{E}(I_k)$ for all $k$
-\STATE \textbf{Observation covariance:} estimate $\hat{\eta}_k$ with C-UNSURE and compute $\bm{\Sigma}_k$ by Eq.~\eqref{eq:mc_jvp}
+\STATE \textbf{Observation covariance:} $\bm{g}_k\gets s_{\varphi}(I_k)$; compute $h_k$, $\hat{\eta}_k$, and $\bm{\Sigma}_k$ by Eqs.~\eqref{eq:frame_score_autocorr}--\eqref{eq:mc_jvp}
 \STATE Initialize $\hat{\bm{h}}_0, \bm{P}_0 \gets \bm{0}$; $\bar{\rho}_0 \gets 1$
 \FOR{$k = 1$ to $K$}
     \STATE \textbf{SDE Propagation:}
-    \STATE $\hat{\bm{h}}'_k, \bm{P}'_k \gets \text{SDESolve}(\hat{\bm{h}}_{k-1}, \bm{P}_{k-1}, (t_{k-1}, t_k), \bm{f}_\theta, \bm{G}_\theta, \bar{\rho}_{k-1}\bm{Q}_0)$
+    \STATE $(\hat{\bm{h}}'_k, \bm{P}'_k) \gets \text{SDESolve}(\hat{\bm{h}}_{k-1}, \bm{P}_{k-1}, t_{k-1}, t_k;$
+    \STATE \hspace{\algorithmicindent}$\bm{f}_\theta, \bm{G}_\theta, \bar{\rho}_{k-1}\bm{Q}_0)$
     \IF{frame $I_k$ is observed}
         \STATE \textbf{Innovation:}
         \STATE $\bm{e}_k \gets \tilde{\bm{z}}_k - o_\chi(\hat{\bm{h}}'_k,t_k)$
