@@ -20,16 +20,16 @@ data:
   pin_memory: true
   persistent_workers: true
   prefetch_factor: 2
-  # Use this when latent H5 source_path was generated on another machine.
-  # source_path_remap:
-  #   - from: /workspace/Cine-UNSURE/datasets
-  #     to: datasets
+  source_path_remap:
+    - from: /Users/xuanloc/Documents/Codex/2026-07-04/c-b-i-b-o-n/outputs/cunsure_monai3d/datasets
+      to: datasets
+    - from: /workspace/Cine-UNSURE/datasets
+      to: datasets
 
 nodeo:
   trajectory_summaries:
     - runs/nodeo_dir_roi/train/summary.jsonl
     - runs/nodeo_dir_roi/val/summary.jsonl
-    - runs/nodeo_dir_roi/test/summary.jsonl
 
 model:
   image_shape: [16, 96, 96]

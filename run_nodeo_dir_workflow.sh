@@ -11,6 +11,7 @@ START_INDEX="${START_INDEX:-0}"
 LIMIT="${LIMIT:-}"
 SEQUENCE_INDEX="${SEQUENCE_INDEX:-0}"
 VIS_OUTPUT="${VIS_OUTPUT:-runs/nodeo_dir_roi/demo_sequence${SEQUENCE_INDEX}.gif}"
+SEQUENCE_WORKERS="${SEQUENCE_WORKERS:-1}"
 
 run_split() {
   "${PYTHON_BIN}" scripts/build_nodeo_roi_splits.py --config "${SPLIT_CONFIG}"
@@ -18,16 +19,60 @@ run_split() {
 
 run_cohort() {
   local split="$1"
-  local cmd=(
-    "${PYTHON_BIN}" scripts/run_nodeo_dir.py
-    --config "${NODEO_CONFIG}"
-    --split "${split}"
-    --start-index "${START_INDEX}"
-  )
-  if [[ -n "${LIMIT}" ]]; then
-    cmd+=(--limit "${LIMIT}")
+  if (( SEQUENCE_WORKERS <= 1 )); then
+    local cmd=(
+      "${PYTHON_BIN}" scripts/run_nodeo_dir.py
+      --config "${NODEO_CONFIG}"
+      --split "${split}"
+      --start-index "${START_INDEX}"
+    )
+    if [[ -n "${LIMIT}" ]]; then
+      cmd+=(--limit "${LIMIT}")
+    fi
+    "${cmd[@]}"
+    return
   fi
-  "${cmd[@]}"
+
+  local worker
+  local pids=()
+  mkdir -p "runs/nodeo_dir_roi/${split}"
+  for ((worker = 0; worker < SEQUENCE_WORKERS; worker++)); do
+    local cmd=(
+      "${PYTHON_BIN}" scripts/run_nodeo_dir.py
+      --config "${NODEO_CONFIG}"
+      --split "${split}"
+      --start-index "${START_INDEX}"
+      --num-shards "${SEQUENCE_WORKERS}"
+      --shard-id "${worker}"
+    )
+    if [[ -n "${LIMIT}" ]]; then
+      cmd+=(--limit "${LIMIT}")
+    fi
+    "${cmd[@]}" >"runs/nodeo_dir_roi/${split}/worker_${worker}.log" 2>&1 &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do
+    wait "${pid}"
+  done
+
+  "${PYTHON_BIN}" - "runs/nodeo_dir_roi/${split}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+directory = Path(sys.argv[1])
+rows = {}
+for path in sorted(directory.glob("summary.shard*.jsonl")):
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                row = json.loads(line)
+                rows[str(row["sequence_id"])] = row
+with (directory / "summary.jsonl").open("w", encoding="utf-8") as handle:
+    for row in sorted(rows.values(), key=lambda item: item["output"]):
+        handle.write(json.dumps(row) + "\n")
+print(f"merged {len(rows)} sequence records into {directory / 'summary.jsonl'}")
+PY
 }
 
 run_summary() {

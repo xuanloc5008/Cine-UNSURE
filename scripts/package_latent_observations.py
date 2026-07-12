@@ -14,6 +14,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cunsure_monai3d.config import project_root, resolve_path
+from cunsure_monai3d.nodeo_roi_data import canonical_source_key
 
 
 def infer_dataset_name(source_path: str) -> str:
@@ -27,10 +28,13 @@ def infer_dataset_name(source_path: str) -> str:
     return "unknown"
 
 
-def read_summary_outputs(input_dir: Path) -> list[Path]:
+def read_summary_outputs(input_dirs: list[Path]) -> list[Path]:
     # Files are authoritative. A resumed run can legitimately have a partial
     # summary.jsonl while all numbered frame outputs are present.
-    return sorted(path for path in input_dir.glob("[0-9]*.pt") if path.is_file())
+    paths: list[Path] = []
+    for input_dir in input_dirs:
+        paths.extend(path for path in input_dir.glob("[0-9]*.pt") if path.is_file())
+    return sorted(paths, key=lambda path: (str(path.parent), path.name))
 
 
 def resolve_maybe_absolute(path: str | Path, root: Path) -> Path:
@@ -40,17 +44,17 @@ def resolve_maybe_absolute(path: str | Path, root: Path) -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input-dir", required=True)
+    parser.add_argument("--input-dir", required=True, action="append")
     parser.add_argument("--output", required=True)
     parser.add_argument("--compression", default="lzf", choices=["lzf", "gzip", "none"])
     args = parser.parse_args()
 
     root = project_root()
-    input_dir = resolve_maybe_absolute(args.input_dir, root)
+    input_dirs = [resolve_maybe_absolute(path, root) for path in args.input_dir]
     output_path = resolve_maybe_absolute(args.output, root)
-    paths = read_summary_outputs(input_dir)
+    paths = read_summary_outputs(input_dirs)
     if not paths:
-        raise ValueError(f"no .pt outputs found in {input_dir}")
+        raise ValueError(f"no .pt outputs found in {input_dirs}")
 
     first = torch.load(paths[0], map_location="cpu", weights_only=False)
     z0 = first["z"].reshape(-1).float()
@@ -77,6 +81,7 @@ def main() -> None:
     if temporary_path.exists():
         temporary_path.unlink()
     trace_values: list[float] = []
+    seen_frames: set[tuple[str, int]] = set()
     eta_mode = "per_frame" if first.get("method") == "score_cunsure_per_frame" else "replicated_global"
     with h5py.File(temporary_path, "w") as h5:
         z = h5.create_dataset("z", shape=(n, latent_dim), dtype="float32", chunks=(1, latent_dim), **compression_kwargs)
@@ -121,6 +126,10 @@ def main() -> None:
             if tuple(etai.shape) != tuple(eta0.shape):
                 raise ValueError(f"eta shape mismatch for {path}: {tuple(etai.shape)}")
             src = str(item.get("source_path", ""))
+            frame_key = (canonical_source_key(src), int(item.get("time_index", -1)))
+            if frame_key in seen_frames:
+                raise ValueError(f"duplicate source/time frame across input directories: {frame_key}")
+            seen_frames.add(frame_key)
             z[idx] = zi.numpy()
             cov[idx] = covi.numpy()
             eta[idx] = etai.numpy()

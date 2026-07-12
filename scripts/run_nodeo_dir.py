@@ -216,7 +216,14 @@ def main() -> None:
     parser.add_argument("--start-index", type=int, default=0)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--num-shards", type=int, default=1)
+    parser.add_argument("--shard-id", type=int, default=0)
     args = parser.parse_args()
+
+    if args.num_shards < 1:
+        parser.error("--num-shards must be at least 1")
+    if not 0 <= args.shard_id < args.num_shards:
+        parser.error("--shard-id must satisfy 0 <= shard-id < num-shards")
 
     root = project_root()
     cfg = load_yaml(root / args.config)
@@ -231,7 +238,11 @@ def main() -> None:
     )
     stop = len(dataset) if args.limit is None else min(len(dataset), args.start_index + args.limit)
     output_dir = resolve_path(cfg["output"]["run_dir"], root) / args.split
-    summary_path = output_dir / "summary.jsonl"
+    summary_path = (
+        output_dir / "summary.jsonl"
+        if args.num_shards == 1
+        else output_dir / f"summary.shard{args.shard_id:03d}.jsonl"
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     completed: set[str] = set()
     if summary_path.exists():
@@ -240,7 +251,12 @@ def main() -> None:
                 if line.strip():
                     completed.add(str(json.loads(line)["sequence_id"]))
 
-    for index in tqdm(range(args.start_index, stop), desc=f"NODEO {args.split}"):
+    indices = [
+        index
+        for index in range(args.start_index, stop)
+        if index % args.num_shards == args.shard_id
+    ]
+    for index in tqdm(indices, desc=f"NODEO {args.split} shard {args.shard_id + 1}/{args.num_shards}"):
         batch = dataset[index]
         output_path = output_dir / f"{index:06d}_{batch['sequence_id']}.pt"
         if output_path.exists() and not args.overwrite:
