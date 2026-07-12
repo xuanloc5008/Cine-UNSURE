@@ -16,14 +16,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cunsure_monai3d.config import as_tuple_int, load_yaml, project_root, resolve_path, select_device
 from cunsure_monai3d.deformation_data import DeformationSequenceDataset
-from cunsure_monai3d.nodeo_mean import NODEOMeanDeformationModel
-from cunsure_monai3d.nodeo_ops import (
-    LocalNCC3D,
-    SpatialTransformer3D,
-    negative_jacobian_loss,
-    smoothness_loss,
-    velocity_magnitude_loss,
-)
+from cunsure_monai3d.nodeo_ops import LocalNCC3D, SpatialTransformer3D, negative_jacobian_loss, smoothness_loss
+from cunsure_monai3d.nodeo_roi_data import NODEOTrajectoryStore
+from cunsure_monai3d.sde_rnn_uncertainty import NeuralSDERNNUncertainty
 
 
 def set_seed(seed: int) -> None:
@@ -45,6 +40,12 @@ def configure_torch_speed(device: torch.device) -> None:
         pass
 
 
+def sequence_collate(batch: list[dict[str, object]]) -> dict[str, object]:
+    if len(batch) != 1:
+        raise ValueError("batch_size must be 1 for variable-length SDE-RNN sequence training")
+    return batch[0]
+
+
 def load_split_indices(index_path: Path | None, split: str) -> list[int] | None:
     if index_path is None or not index_path.exists():
         return None
@@ -57,12 +58,6 @@ def load_split_indices(index_path: Path | None, split: str) -> list[int] | None:
             if row.get("split") == split:
                 indices.append(int(row["sequence_id"]))
     return indices
-
-
-def sequence_collate(batch: list[dict[str, object]]) -> dict[str, object]:
-    if len(batch) != 1:
-        raise ValueError("batch_size must be 1 for variable-length NODEO sequence training")
-    return batch[0]
 
 
 def make_loader(
@@ -90,90 +85,97 @@ def make_loader(
     return DataLoader(subset, **kwargs)
 
 
-def build_model(cfg: dict, *, device: torch.device) -> NODEOMeanDeformationModel:
+def build_sde_rnn(cfg: dict, *, latent_dim: int, device: torch.device) -> NeuralSDERNNUncertainty:
     model_cfg = cfg["model"]
-    return NODEOMeanDeformationModel(
+    return NeuralSDERNNUncertainty(
+        latent_dim=int(latent_dim),
+        hidden_dim=int(model_cfg["hidden_dim"]),
         image_shape=as_tuple_int(model_cfg["image_shape"], name="image_shape"),
-        channels=tuple(int(v) for v in model_cfg.get("channels", [32, 32, 32])),
-        kernel_size=int(model_cfg.get("kernel_size", 3)),
-        velocity_scale=float(model_cfg.get("velocity_scale", 4.0)),
-        smoothing_kernel=int(model_cfg.get("smoothing_kernel", 3)),
-        ode_steps_per_interval=int(model_cfg.get("ode_steps_per_interval", 4)),
-        zero_init_velocity=bool(model_cfg.get("zero_init_velocity", True)),
+        mlp_hidden_dim=int(model_cfg["mlp_hidden_dim"]),
+        mlp_layers=int(model_cfg["mlp_layers"]),
+        diffusion_scale=float(model_cfg["diffusion_scale"]),
+        init_covariance=float(model_cfg["init_covariance"]),
+        residual_scale=float(model_cfg["residual_scale"]),
+        sde_steps_per_interval=int(model_cfg["sde_steps_per_interval"]),
     ).to(device)
 
 
-def nodeo_mean_sequence_loss(
-    model: NODEOMeanDeformationModel,
-    batch: dict[str, object],
+def sde_rnn_sequence_loss(
     *,
+    sde_rnn: NeuralSDERNNUncertainty,
+    trajectory_store: NODEOTrajectoryStore,
+    batch: dict[str, object],
     ncc: LocalNCC3D,
     transformer: SpatialTransformer3D,
     device: torch.device,
     lambda_j: float,
-    lambda_v: float,
     lambda_df: float,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     images = batch["images"].to(device)
+    z = batch["z"].to(device)
+    r = batch["R"].to(device)
     times = batch["times"].to(device)
     if images.shape[0] < 2:
         zero = images.new_tensor(0.0)
-        return zero, {"loss": 0.0, "image": 0.0, "jdet": 0.0, "mag": 0.0, "smooth": 0.0}
+        return zero, {"loss": 0.0, "image": 0.0, "jdet": 0.0, "smooth": 0.0}
 
-    output = model.integrate_sequence(times)
+    phi_bar = trajectory_store.load(str(batch["source_path"])).to(device)
+    if phi_bar.shape[0] != images.shape[0]:
+        raise ValueError(f"NODEO/latent sequence length mismatch for {batch['source_path']}")
+    out = sde_rnn(times=times, z=z, r=r, phi_bar=phi_bar)
+
     target = images[1:]
-    displacement = output.displacement[1:]
-    phi = output.phi[1:]
+    displacement = out.total_displacement[1:]
+    phi = out.phi[1:]
     reference = images[0:1].expand(target.shape[0], -1, -1, -1, -1)
     warped = transformer(reference, displacement)
 
     loss_img = ncc(target, warped)
     loss_j = negative_jacobian_loss(phi)
-    loss_s = smoothness_loss(displacement)
-    loss_v = velocity_magnitude_loss(output.velocity[1:, None])
-    loss = loss_img + float(lambda_j) * loss_j + float(lambda_v) * loss_v + float(lambda_df) * loss_s
+    loss_s = smoothness_loss(out.residual_displacement[1:])
+    loss = loss_img + float(lambda_j) * loss_j + float(lambda_df) * loss_s
     metrics = {
         "loss": float(loss.detach().cpu()),
         "image": float(loss_img.detach().cpu()),
         "jdet": float(loss_j.detach().cpu()),
-        "mag": float(loss_v.detach().cpu()),
         "smooth": float(loss_s.detach().cpu()),
     }
     return loss, metrics
 
 
 def run_epoch(
-    model: NODEOMeanDeformationModel,
+    *,
+    sde_rnn: NeuralSDERNNUncertainty,
+    trajectory_store: NODEOTrajectoryStore,
     loader: DataLoader,
     optimizer: torch.optim.Optimizer | None,
-    *,
     device: torch.device,
     loss_cfg: dict,
     image_shape: tuple[int, int, int],
     grad_clip: float | None,
 ) -> dict[str, float]:
     is_train = optimizer is not None
-    model.train(is_train)
+    sde_rnn.train(is_train)
     ncc = LocalNCC3D(win=int(loss_cfg.get("ncc_win", 9))).to(device)
     transformer = SpatialTransformer3D(image_shape).to(device)
-    totals = {"loss": 0.0, "image": 0.0, "jdet": 0.0, "mag": 0.0, "smooth": 0.0}
+    totals = {"loss": 0.0, "image": 0.0, "jdet": 0.0, "smooth": 0.0}
     count = 0
     for batch in tqdm(loader, desc="train" if is_train else "val", leave=False):
-        loss, metrics = nodeo_mean_sequence_loss(
-            model,
-            batch,
+        loss, metrics = sde_rnn_sequence_loss(
+            sde_rnn=sde_rnn,
+            trajectory_store=trajectory_store,
+            batch=batch,
             ncc=ncc,
             transformer=transformer,
             device=device,
             lambda_j=float(loss_cfg["lambda_j"]),
-            lambda_v=float(loss_cfg["lambda_v"]),
             lambda_df=float(loss_cfg["lambda_df"]),
         )
         if is_train:
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             if grad_clip is not None:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), float(grad_clip))
+                torch.nn.utils.clip_grad_norm_(sde_rnn.parameters(), float(grad_clip))
             optimizer.step()
         for key in totals:
             totals[key] += metrics[key]
@@ -181,14 +183,14 @@ def run_epoch(
     return {key: value / max(count, 1) for key, value in totals.items()} | {"sequences": float(count)}
 
 
-def save_checkpoint(path: Path, model: NODEOMeanDeformationModel, cfg: dict, epoch: int, metrics: dict[str, float]) -> None:
+def save_checkpoint(path: Path, model: NeuralSDERNNUncertainty, cfg: dict, epoch: int, metrics: dict[str, float]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save({"epoch": epoch, "model_state": model.state_dict(), "config": cfg, "metrics": metrics}, path)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/train_nodeo_mean_deformation.yaml")
+    parser.add_argument("--config", default="configs/train_sde_rnn_uncertainty.yaml")
     args = parser.parse_args()
 
     root = project_root()
@@ -203,7 +205,7 @@ def main() -> None:
         resolve_path(data_cfg["h5"], root),
         root=root,
         min_length=int(data_cfg.get("min_length", 2)),
-        covariance=str(data_cfg.get("covariance", "diag")),
+        covariance=str(data_cfg.get("covariance", "full")),
         normalize_time=bool(data_cfg.get("normalize_time", True)),
         time_axis=int(data_cfg.get("time_axis", -1)),
         volume_size=as_tuple_int(data_cfg["volume_size"], name="volume_size"),
@@ -218,7 +220,7 @@ def main() -> None:
         require_roi_mask=bool(data_cfg.get("require_roi_mask", False)),
     )
     if not len(dataset):
-        raise ValueError("no deformation sequences found")
+        raise ValueError("no SDE-RNN uncertainty sequences found")
 
     index_path = resolve_path(data_cfg.get("sequence_index"), root)
     train_indices = load_split_indices(index_path, "train")
@@ -230,7 +232,10 @@ def main() -> None:
         val_indices = order[:val_count]
         train_indices = order[val_count:]
 
-    model = build_model(cfg, device=device)
+    trajectory_store = NODEOTrajectoryStore(list(cfg["nodeo"]["trajectory_summaries"]), root=root)
+    latent_dim = int(dataset[0]["z"].shape[-1])
+    sde_rnn = build_sde_rnn(cfg, latent_dim=latent_dim, device=device)
+
     train_loader = make_loader(
         dataset,
         train_indices,
@@ -252,7 +257,7 @@ def main() -> None:
 
     optim_cfg = cfg["optim"]
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        sde_rnn.parameters(),
         lr=float(optim_cfg["lr"]),
         weight_decay=float(optim_cfg.get("weight_decay", 0.0)),
     )
@@ -266,24 +271,25 @@ def main() -> None:
 
     for epoch in range(1, int(optim_cfg["epochs"]) + 1):
         train_metrics = run_epoch(
-            model,
-            train_loader,
-            optimizer,
+            sde_rnn=sde_rnn,
+            trajectory_store=trajectory_store,
+            loader=train_loader,
+            optimizer=optimizer,
             device=device,
             loss_cfg=cfg["loss"],
             image_shape=image_shape,
             grad_clip=optim_cfg.get("grad_clip"),
         )
-        with torch.no_grad():
-            val_metrics = run_epoch(
-                model,
-                val_loader,
-                None,
-                device=device,
-                loss_cfg=cfg["loss"],
-                image_shape=image_shape,
-                grad_clip=None,
-            )
+        val_metrics = run_epoch(
+            sde_rnn=sde_rnn,
+            trajectory_store=trajectory_store,
+            loader=val_loader,
+            optimizer=None,
+            device=device,
+            loss_cfg=cfg["loss"],
+            image_shape=image_shape,
+            grad_clip=None,
+        )
         row = {"epoch": epoch, "train": train_metrics, "val": val_metrics}
         print(json.dumps(row, indent=2))
         with metrics_path.open("a", encoding="utf-8") as f:
@@ -292,12 +298,12 @@ def main() -> None:
         if val_metrics["loss"] < best_val - min_delta:
             best_val = val_metrics["loss"]
             stale_epochs = 0
-            save_checkpoint(run_dir / "best.pt", model, cfg, epoch, val_metrics)
+            save_checkpoint(run_dir / "best.pt", sde_rnn, cfg, epoch, val_metrics)
         else:
             stale_epochs += 1
 
         if epoch % int(cfg["output"].get("checkpoint_every", 10)) == 0:
-            save_checkpoint(run_dir / f"epoch_{epoch:04d}.pt", model, cfg, epoch, val_metrics)
+            save_checkpoint(run_dir / f"epoch_{epoch:04d}.pt", sde_rnn, cfg, epoch, val_metrics)
 
         if patience > 0 and stale_epochs >= patience:
             print(json.dumps({"early_stopped": True, "epoch": epoch, "best_val_loss": best_val}, indent=2))
@@ -306,4 +312,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

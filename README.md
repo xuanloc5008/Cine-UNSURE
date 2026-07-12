@@ -1,4 +1,4 @@
-# Score C-UNSURE + CineMA + NODEO Mean Deformation
+# Score C-UNSURE + CineMA + NODEO-DIR + Neural SDE-RNN
 
 This repository uses the current workflow:
 
@@ -7,13 +7,20 @@ ROI cine H5
   -> Score C-UNSURE per-frame image uncertainty
   -> CineMA latent observation covariance
   -> packaged latent H5
-  -> NODEO mean deformation training
-  -> deformation inference and clinical metrics
+ROI cine H5 -> independent per-sequence NODEO-DIR optimization
+  -> NODEO mean trajectories phi_bar
+  -> Neural SDE-RNN uncertainty propagation
+  -> deformation inference, deformation covariance, and clinical metrics
 ```
 
-The deformation mean is learned with a NODEO-style velocity field over the full
-voxel grid. The SDE-RNN deformation decoder baseline has been removed from the
-active workflow.
+NODEO-DIR is deliberately independent of C-UNSURE and CineMA. It reads only
+`y`, `source_path`, and `time_index` from the pre-cropped ROI H5 files and
+optimizes a fresh velocity network for every cine sequence, matching the
+optimization-based formulation of the original NODEO repository. The Neural
+SDE-RNN branch follows the mean/covariance propagation
+formulation: SDE propagation between observed frames, CVRNN update at observed
+frames using CineMA latent covariance, and output covariance
+`R_phi = J_c P J_c^T` around the NODEO mean trajectory.
 
 ## Setup
 
@@ -47,33 +54,46 @@ python scripts/package_latent_observations.py \
   --output runs/selected/latent_observations_cinema_score_cunsure_roi.h5 \
   --compression lzf
 
+python scripts/build_nodeo_roi_splits.py \
+  --config configs/nodeo_roi_splits.yaml
+
+python scripts/run_nodeo_dir.py \
+  --config configs/train_nodeo_dir_roi.yaml \
+  --split train
+
+python scripts/run_nodeo_dir.py \
+  --config configs/train_nodeo_dir_roi.yaml \
+  --split val
+
+python scripts/run_nodeo_dir.py \
+  --config configs/train_nodeo_dir_roi.yaml \
+  --split test
+
+python scripts/summarize_nodeo_dir.py \
+  --summary runs/nodeo_dir_roi/test/summary.jsonl \
+  --output runs/nodeo_dir_roi/test/metrics_summary.json
+
 python scripts/export_sde_sequence_index.py \
   --h5 runs/selected/latent_observations_cinema_score_cunsure_roi.h5 \
   --output runs/selected/sde_sequence_index_roi.jsonl \
   --min-length 2 \
-  --val-fraction 0.1 \
-  --test-fraction 0.1
+  --split-manifest processed/nodeo_roi_splits.jsonl
 
-python scripts/verify_deformation_training_inputs.py \
-  --config configs/train_nodeo_mean_deformation.yaml \
-  --num-sequences 5 \
-  --random
+python scripts/train_sde_rnn_uncertainty.py \
+  --config configs/train_sde_rnn_uncertainty.yaml
 
-python scripts/train_nodeo_mean_deformation.py \
-  --config configs/train_nodeo_mean_deformation.yaml
-
-python scripts/infer_nodeo_mean_deformation.py \
-  --checkpoint runs/nodeo_mean_deformation_roi/best.pt \
+python scripts/infer_sde_rnn_uncertainty.py \
+  --checkpoint runs/sde_rnn_uncertainty_roi/best.pt \
   --h5 runs/selected/latent_observations_cinema_score_cunsure_roi.h5 \
-  --output runs/nodeo_mean_deformation_roi/mean_deformation_sequence0.pt \
+  --output runs/sde_rnn_uncertainty_roi/sde_rnn_uncertainty_sequence0.pt \
   --sequence-index 0 \
-  --covariance diag \
   --device auto
 ```
 
 The same workflow can be run through:
 
 ```bash
+./run_nodeo_dir_workflow.sh all
 ./run_deformation_workflow.sh full
 ```
 
@@ -82,8 +102,12 @@ For deformation-only runs after latent packaging:
 ```bash
 ./run_deformation_workflow.sh index
 ./run_deformation_workflow.sh verify
-./run_deformation_workflow.sh train-mean
-./run_deformation_workflow.sh infer-mean
+./run_nodeo_dir_workflow.sh split
+./run_nodeo_dir_workflow.sh train
+./run_nodeo_dir_workflow.sh val
+./run_nodeo_dir_workflow.sh test
+./run_deformation_workflow.sh train-uncertainty
+./run_deformation_workflow.sh infer-uncertainty
 ```
 
 See [docs/score_cunsure_workflow.md](docs/score_cunsure_workflow.md) for the

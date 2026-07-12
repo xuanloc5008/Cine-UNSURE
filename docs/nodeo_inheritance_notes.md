@@ -6,7 +6,8 @@ Local reference repository:
 /Users/xuanloc/Documents/NODE/NODEO-DIR
 ```
 
-The downstream deformation code should inherit NODEO-DIR's registration semantics rather than introducing a new registration objective.
+The NODEO implementation is a separate per-sequence optimizer. It consumes only
+pre-cropped ROI image sequences and has no dependency on C-UNSURE or CineMA.
 
 ## Components inherited
 
@@ -16,11 +17,15 @@ The downstream deformation code should inherit NODEO-DIR's registration semantic
 - `smoothness_loss`: spatial smoothness penalty on the displacement field.
 - `velocity_magnitude_loss`: velocity/displacement magnitude regularization.
 - `euler_integrate` and `rk4_integrate`: NODEO-style ODE integration choices.
+- `NODEODIRVelocityNet`: BrainNet-style encoder/bottleneck/upsampling network
+  with time concatenated to the full transformed coordinate grid.
+- `NODEODIRModel`: normalized coordinate-grid state integrated by Euler or RK4.
 
 These are implemented in:
 
 ```text
 src/cunsure_monai3d/nodeo_ops.py
+src/cunsure_monai3d/nodeo_dir.py
 ```
 
 ## Loss to use for deformation training

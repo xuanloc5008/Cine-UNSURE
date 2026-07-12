@@ -5,7 +5,7 @@ data:
   h5: runs/selected/latent_observations_cinema_score_cunsure_roi.h5
   sequence_index: runs/selected/sde_sequence_index_roi.jsonl
   min_length: 2
-  covariance: diag
+  covariance: full
   normalize_time: true
   time_axis: -1
   volume_size: [16, 96, 96]
@@ -16,7 +16,7 @@ data:
   roi_mask_margin: [0, 16, 16]
   require_roi_mask: false
   cache_data: false
-  num_workers: 16
+  num_workers: 8
   pin_memory: true
   persistent_workers: true
   prefetch_factor: 2
@@ -25,30 +25,36 @@ data:
   #   - from: /workspace/Cine-UNSURE/datasets
   #     to: datasets
 
+nodeo:
+  trajectory_summaries:
+    - runs/nodeo_dir_roi/train/summary.jsonl
+    - runs/nodeo_dir_roi/val/summary.jsonl
+    - runs/nodeo_dir_roi/test/summary.jsonl
+
 model:
   image_shape: [16, 96, 96]
-  channels: [16, 32, 32, 16]
-  kernel_size: 3
-  velocity_scale: 4.0
-  smoothing_kernel: 3
-  ode_steps_per_interval: 2
-  zero_init_velocity: true
+  hidden_dim: 16
+  mlp_hidden_dim: 128
+  mlp_layers: 3
+  diffusion_scale: 0.05
+  init_covariance: 0.0001
+  residual_scale: 2.0
+  sde_steps_per_interval: 1
 
 loss:
   ncc_win: 9
   lambda_j: 2.5
-  lambda_v: 0.00005
   lambda_df: 0.05
+  jitter: 0.000001
 
 optim:
-  epochs: 100
+  epochs: 50
   lr: 0.00005
   weight_decay: 0.0005
   grad_clip: 1.0
-  early_stopping_patience: 10
+  early_stopping_patience: 8
   early_stopping_min_delta: 0.00001
 
 output:
-  run_dir: runs/nodeo_mean_deformation_roi
+  run_dir: runs/sde_rnn_uncertainty_roi
   checkpoint_every: 10
-

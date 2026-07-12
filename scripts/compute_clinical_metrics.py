@@ -111,7 +111,8 @@ def main() -> None:
         mask_path = root / mask_path
 
     item = torch.load(deformation_path, map_location="cpu", weights_only=False)
-    displacement_all = item["displacement"].float()
+    displacement_key = "displacement" if "displacement" in item else "total_displacement"
+    displacement_all = item[displacement_key].float()
     cov_diag_all = item.get("deformation_covariance_diag")
     if cov_diag_all is not None:
         cov_diag_all = cov_diag_all.float().clamp_min(0)

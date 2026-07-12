@@ -9,12 +9,12 @@ STAGE="${1:-all}"
 PREPARE_CONFIG="${PREPARE_CONFIG:-configs/prepare_hdf5.yaml}"
 SCORE_CONFIG="${SCORE_CONFIG:-configs/train_cunsure_score.yaml}"
 SCORE_CINEMA_CONFIG="${SCORE_CINEMA_CONFIG:-configs/infer_cinema_score_cunsure_all_datasets.yaml}"
-MEAN_CONFIG="${MEAN_CONFIG:-configs/train_nodeo_mean_deformation.yaml}"
+SDE_RNN_CONFIG="${SDE_RNN_CONFIG:-configs/train_sde_rnn_uncertainty.yaml}"
 SCORE_OUTPUT_DIR="${SCORE_OUTPUT_DIR:-runs/selected/cinema_score_cunsure_roi_all_datasets}"
 
 LATENT_H5="${LATENT_H5:-}"
 if [[ -z "${LATENT_H5}" ]]; then
-  LATENT_H5="$("${PYTHON_BIN}" - "${MEAN_CONFIG}" <<'PY'
+  LATENT_H5="$("${PYTHON_BIN}" - "${SDE_RNN_CONFIG}" <<'PY'
 import sys
 import yaml
 
@@ -27,7 +27,7 @@ fi
 
 SEQUENCE_INDEX_FILE="${SEQUENCE_INDEX_FILE:-}"
 if [[ -z "${SEQUENCE_INDEX_FILE}" ]]; then
-  SEQUENCE_INDEX_FILE="$("${PYTHON_BIN}" - "${MEAN_CONFIG}" <<'PY'
+  SEQUENCE_INDEX_FILE="$("${PYTHON_BIN}" - "${SDE_RNN_CONFIG}" <<'PY'
 import sys
 import yaml
 
@@ -38,25 +38,13 @@ PY
 )"
 fi
 
-MEAN_RUN_DIR="${MEAN_RUN_DIR:-}"
-if [[ -z "${MEAN_RUN_DIR}" ]]; then
-  MEAN_RUN_DIR="$("${PYTHON_BIN}" - "${MEAN_CONFIG}" <<'PY'
-import sys
-import yaml
-
-with open(sys.argv[1], "r", encoding="utf-8") as f:
-    cfg = yaml.safe_load(f)
-print(cfg["output"]["run_dir"])
-PY
-)"
-fi
-
-MEAN_CHECKPOINT="${MEAN_CHECKPOINT:-${MEAN_RUN_DIR}/best.pt}"
+SDE_RNN_RUN_DIR="${SDE_RNN_RUN_DIR:-runs/sde_rnn_uncertainty_roi}"
+SDE_RNN_CHECKPOINT="${SDE_RNN_CHECKPOINT:-${SDE_RNN_RUN_DIR}/best.pt}"
 SEQUENCE_ID="${SEQUENCE_ID:-0}"
 DEVICE="${DEVICE:-auto}"
 COVARIANCE="${COVARIANCE:-diag}"
-MEAN_DEFORMATION_OUTPUT="${MEAN_DEFORMATION_OUTPUT:-${MEAN_RUN_DIR}/mean_deformation_sequence${SEQUENCE_ID}.pt}"
-CLINICAL_OUTPUT="${CLINICAL_OUTPUT:-${MEAN_RUN_DIR}/clinical_metrics_sequence${SEQUENCE_ID}.json}"
+SDE_RNN_OUTPUT="${SDE_RNN_OUTPUT:-${SDE_RNN_RUN_DIR}/sde_rnn_uncertainty_sequence${SEQUENCE_ID}.pt}"
+CLINICAL_OUTPUT="${CLINICAL_OUTPUT:-${SDE_RNN_RUN_DIR}/clinical_metrics_sequence${SEQUENCE_ID}.json}"
 
 REFERENCE_MASK="${REFERENCE_MASK:-}"
 LABELS="${LABELS:-1}"
@@ -97,29 +85,27 @@ run_sequence_index() {
     --h5 "${LATENT_H5}" \
     --output "${SEQUENCE_INDEX_FILE}" \
     --min-length "${MIN_LENGTH}" \
-    --val-fraction "${VAL_FRACTION}" \
-    --test-fraction "${TEST_FRACTION}"
+    --split-manifest processed/nodeo_roi_splits.jsonl
 }
 
 run_verify_deformation_inputs() {
   "${PYTHON_BIN}" scripts/verify_deformation_training_inputs.py \
-    --config "${MEAN_CONFIG}" \
+    --config "${SDE_RNN_CONFIG}" \
     --num-sequences "${VERIFY_NUM_SEQUENCES}" \
     --random
 }
 
-run_train_mean_deformation() {
-  "${PYTHON_BIN}" scripts/train_nodeo_mean_deformation.py \
-    --config "${MEAN_CONFIG}"
+run_train_sde_rnn_uncertainty() {
+  "${PYTHON_BIN}" scripts/train_sde_rnn_uncertainty.py \
+    --config "${SDE_RNN_CONFIG}"
 }
 
-run_infer_mean_deformation() {
-  "${PYTHON_BIN}" scripts/infer_nodeo_mean_deformation.py \
-    --checkpoint "${MEAN_CHECKPOINT}" \
+run_infer_sde_rnn_uncertainty() {
+  "${PYTHON_BIN}" scripts/infer_sde_rnn_uncertainty.py \
+    --checkpoint "${SDE_RNN_CHECKPOINT}" \
     --h5 "${LATENT_H5}" \
-    --output "${MEAN_DEFORMATION_OUTPUT}" \
+    --output "${SDE_RNN_OUTPUT}" \
     --sequence-index "${SEQUENCE_ID}" \
-    --covariance "${COVARIANCE}" \
     --device "${DEVICE}"
 }
 
@@ -131,7 +117,7 @@ run_clinical_metrics() {
 
   cmd=(
     "${PYTHON_BIN}" scripts/compute_clinical_metrics.py
-    --deformation "${MEAN_DEFORMATION_OUTPUT}"
+    --deformation "${SDE_RNN_OUTPUT}"
     --reference-mask "${REFERENCE_MASK}"
     --output "${CLINICAL_OUTPUT}"
     --labels "${LABELS}"
@@ -154,8 +140,8 @@ run_deformation_all() {
     run_sequence_index
   fi
   run_verify_deformation_inputs
-  run_train_mean_deformation
-  run_infer_mean_deformation
+  run_train_sde_rnn_uncertainty
+  run_infer_sde_rnn_uncertainty
   run_clinical_metrics
 }
 
@@ -166,8 +152,8 @@ run_full_all() {
   run_package_latent
   run_sequence_index
   run_verify_deformation_inputs
-  run_train_mean_deformation
-  run_infer_mean_deformation
+  run_train_sde_rnn_uncertainty
+  run_infer_sde_rnn_uncertainty
   run_clinical_metrics
 }
 
@@ -190,11 +176,23 @@ case "${STAGE}" in
   verify)
     run_verify_deformation_inputs
     ;;
-  train-mean|train)
-    run_train_mean_deformation
+  nodeo-split)
+    ./run_nodeo_dir_workflow.sh split
     ;;
-  infer-mean|infer)
-    run_infer_mean_deformation
+  nodeo-train|train-mean)
+    ./run_nodeo_dir_workflow.sh train
+    ;;
+  nodeo-val)
+    ./run_nodeo_dir_workflow.sh val
+    ;;
+  nodeo-test)
+    ./run_nodeo_dir_workflow.sh test
+    ;;
+  train-uncertainty|train-sde-rnn)
+    run_train_sde_rnn_uncertainty
+    ;;
+  infer|infer-uncertainty|infer-sde-rnn)
+    run_infer_sde_rnn_uncertainty
     ;;
   clinical)
     run_clinical_metrics
@@ -207,7 +205,7 @@ case "${STAGE}" in
     ;;
   *)
     echo "Unknown stage: ${STAGE}"
-    echo "Usage: $0 [prepare|train-score|cinema-score|package-latent|index|verify|train-mean|infer-mean|clinical|all|full]"
+    echo "Usage: $0 [prepare|train-score|cinema-score|package-latent|index|verify|nodeo-split|nodeo-train|nodeo-val|nodeo-test|train-uncertainty|infer-uncertainty|clinical|all|full]"
     exit 2
     ;;
 esac

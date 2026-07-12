@@ -17,7 +17,7 @@ from cunsure_monai3d.deformation_data import DeformationSequenceDataset
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/train_nodeo_mean_deformation.yaml")
+    parser.add_argument("--config", default="configs/train_sde_rnn_uncertainty.yaml")
     parser.add_argument("--num-sequences", type=int, default=5)
     parser.add_argument("--random", action="store_true")
     args = parser.parse_args()
