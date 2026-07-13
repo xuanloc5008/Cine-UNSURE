@@ -11,6 +11,7 @@ ROI cine H5 -> independent per-sequence NODEO-DIR optimization
   -> NODEO mean trajectories phi_bar
   -> Neural SDE-RNN uncertainty propagation
   -> deformation inference, deformation covariance, and clinical metrics
+  -> uncertainty-aware ACDC pathology probabilities (NOR/DCM/HCM/MINF/RV)
 ```
 
 NODEO-DIR is deliberately independent of C-UNSURE and CineMA. It reads only
@@ -39,6 +40,9 @@ python scripts/prepare_hdf5.py --config configs/prepare_hdf5.yaml
 python scripts/verify_hdf5_splits.py --config configs/prepare_hdf5.yaml
 
 python scripts/train_cunsure_score.py --config configs/train_cunsure_score.yaml
+
+# Controlled evaluation following the UNSURE paper metrics/protocol.
+./run_acdc_workflow.sh evaluate-score
 
 python scripts/verify_score_cunsure_frames.py \
   --checkpoint runs/cunsure_score_monai3d_roi/best.pt \
@@ -88,7 +92,28 @@ python scripts/infer_sde_rnn_uncertainty.py \
   --output runs/sde_rnn_uncertainty_roi/sde_rnn_uncertainty_sequence0.pt \
   --sequence-index 0 \
   --device auto
+
+./run_acdc_clinical_evaluation.sh
+./run_acdc_pathology.sh all
 ```
+
+The `evaluate-score` stage applies the Theorem 3 estimator
+`f(y) = y + Sigma_eta s_theta(y)` to held-out frames with known synthetic
+Gaussian noise. It reports test PSNR mean/std, estimated versus injected noise
+variance, and covariance-kernel ablations (`1`, `3`, `5`) under
+`runs/acdc/cunsure_score/unsure_protocol_evaluation/`.
+
+These cine frames are held-out references, not physically noise-free MRI.
+Exact reproduction of the paper's FastMRI Table 4 additionally requires raw
+k-space, 2x undersampling, and the EI reconstruction objective.
+
+The pathology classifier is trained only from predicted clinical trajectories
+and their propagated standard errors. It uses ACDC `Group` metadata as the
+supervised target, selects its checkpoint on the validation split, and reports
+accuracy, balanced accuracy, macro-F1, NLL, Brier score, and pathology
+probability bands on the independent test split. These probability bands cover
+uncertainty propagated from the clinical metrics; they are not self-calibrated
+and do not represent all possible diagnostic uncertainty.
 
 The same workflow can be run through:
 

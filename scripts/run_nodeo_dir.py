@@ -122,6 +122,9 @@ def fit_sequence(
     transformer = SpatialTransformer3D(image_shape).to(device)
     epochs = int(optim_cfg["epochs_per_sequence"])
     selection_tail = min(int(optim_cfg.get("selection_tail", 50)), epochs)
+    max_runtime_seconds = optim_cfg.get("max_runtime_seconds")
+    max_runtime_seconds = None if max_runtime_seconds is None else float(max_runtime_seconds)
+    minimum_epochs = min(int(optim_cfg.get("minimum_epochs", 1)), epochs)
     best_score = float("inf")
     best_epoch = 0
     best_state: dict[str, torch.Tensor] | None = None
@@ -159,6 +162,22 @@ def fit_sequence(
                     }
                 )
             )
+        if (
+            max_runtime_seconds is not None
+            and epoch >= minimum_epochs
+            and time.monotonic() - started >= max_runtime_seconds
+        ):
+            print(
+                json.dumps(
+                    {
+                        "sequence_id": batch["sequence_id"],
+                        "stopped_at_epoch": epoch,
+                        "reason": "max_runtime_seconds",
+                        "elapsed_seconds": time.monotonic() - started,
+                    }
+                )
+            )
+            break
 
     if best_state is None or best_metrics is None:
         raise RuntimeError("NODEO did not produce a selected state")

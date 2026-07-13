@@ -4,7 +4,6 @@ device: auto
 pilot:
   max_sequences: 62
   val_fraction: 0.15
-  calibration_fraction: 0.15
   seed: 2026
 
 data:

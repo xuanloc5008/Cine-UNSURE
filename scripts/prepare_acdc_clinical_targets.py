@@ -27,6 +27,11 @@ def local_source(source: str, root: Path) -> Path:
         candidate = root / "datasets" / normalized.split(marker, 1)[1]
         if candidate.exists():
             return candidate
+    marker = "/ACDC/"
+    if marker in normalized:
+        candidate = root / "datasets" / "ACDC" / normalized.split(marker, 1)[1]
+        if candidate.exists():
+            return candidate
     raise FileNotFoundError(f"cannot resolve source path: {source}")
 
 
@@ -55,7 +60,7 @@ def main() -> None:
     parser.add_argument("--checkpoint")
     parser.add_argument("--sequence-index-file")
     parser.add_argument("--h5")
-    parser.add_argument("--split", choices=("train", "calibration", "val", "test"), required=True)
+    parser.add_argument("--split", choices=("train", "val", "test"), required=True)
     args = parser.parse_args()
 
     root = project_root()

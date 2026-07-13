@@ -1,0 +1,21 @@
+seed: 2026
+device: auto
+
+data:
+  train_glob: runs/acdc/clinical/train_predictions/*.json
+  val_glob: runs/acdc/clinical/val_predictions/*.json
+  time_points: 20
+
+model:
+  hidden_dims: [128, 64]
+  dropout: 0.2
+
+optim:
+  epochs: 200
+  lr: 0.0005
+  weight_decay: 0.001
+  early_stopping_patience: 25
+  early_stopping_min_delta: 0.0001
+
+output:
+  run_dir: runs/acdc/pathology

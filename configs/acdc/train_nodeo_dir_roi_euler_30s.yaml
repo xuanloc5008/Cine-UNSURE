@@ -1,0 +1,37 @@
+seed: 2026
+device: auto
+
+data:
+  manifest: processed/acdc/nodeo_roi_splits.jsonl
+  min_length: 2
+
+model:
+  image_shape: [16, 96, 96]
+  encoder_channels: 32
+  encoder_depth: 5
+  output_downsamples: 1
+  bottleneck_dim: 32
+  smoothing_kernel: gaussian
+  smoothing_window: 11
+  smoothing_sigma: 2.0
+  smoothing_passes: 1
+  solver: euler
+  step_size: 0.05
+
+loss:
+  ncc_win: 9
+  minimum_jacobian: 0.5
+  lambda_j: 2.5
+  lambda_v: 0.00005
+  lambda_df: 0.02
+
+optim:
+  # Estimated from 72.73 seconds for 500 Euler epochs on RTX 3090 Ti.
+  epochs_per_sequence: 200
+  lr: 0.002
+  weight_decay: 0.0
+  selection_tail: 50
+  log_every: 20
+
+output:
+  run_dir: runs/acdc/nodeo_dir_euler_30s

@@ -1,0 +1,43 @@
+seed: 2026
+device: auto
+
+data:
+  h5:
+    train: runs/acdc/latent_train_val.h5
+    val: runs/acdc/latent_train_val.h5
+    test: runs/acdc/latent_test.h5
+  min_length: 3
+  covariance: diag
+
+nodeo:
+  summaries:
+    train: runs/acdc/nodeo_dir/train/summary.jsonl
+    val: runs/acdc/nodeo_dir/val/summary.jsonl
+    test: runs/acdc/nodeo_dir/test/summary.jsonl
+
+model:
+  observation_rank: 12
+  motion_rank: 8
+  hidden_dim: 16
+  mlp_hidden_dim: 64
+  mlp_layers: 3
+  integration_steps: 1
+
+fit:
+  iterations: 1000
+  lr: 0.001
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  mask_fraction: 0.35
+  validation_fraction: 0.20
+  validate_every: 20
+  patience: 20
+  min_delta: 0.000001
+
+covariance:
+  init_covariance: 0.000001
+  floor: 0.00000001
+  process_shrinkage: 0.10
+
+output:
+  run_dir: runs/acdc/sde_sequence_posthoc

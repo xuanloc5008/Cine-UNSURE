@@ -121,6 +121,30 @@ class FrameNoiseEstimate:
 
 
 @torch.no_grad()
+def estimate_noise_from_score(
+    score: torch.Tensor,
+    *,
+    kernel_size: int,
+    spectral_floor: float,
+    relative_spectral_floor: float,
+    covariance_floor: float,
+) -> FrameNoiseEstimate:
+    """Apply the score-based UNSURE covariance estimator to a known score."""
+    autocorrelation = frame_score_autocorrelation(score, kernel_size=kernel_size)
+    eta, h_spectrum = eta_from_score_autocorrelation(
+        autocorrelation,
+        spectral_floor=spectral_floor,
+        relative_spectral_floor=relative_spectral_floor,
+    )
+    covariance_spectrum = covariance_spectrum_from_eta(
+        eta,
+        tuple(int(v) for v in score.shape[-3:]),
+        covariance_floor=covariance_floor,
+    )
+    return FrameNoiseEstimate(score, autocorrelation, eta, h_spectrum, covariance_spectrum)
+
+
+@torch.no_grad()
 def estimate_frame_noise(
     score_model: nn.Module,
     y: torch.Tensor,
@@ -131,18 +155,32 @@ def estimate_frame_noise(
     covariance_floor: float,
 ) -> FrameNoiseEstimate:
     score = score_model(y)
-    autocorrelation = frame_score_autocorrelation(score, kernel_size=kernel_size)
-    eta, h_spectrum = eta_from_score_autocorrelation(
-        autocorrelation,
+    return estimate_noise_from_score(
+        score,
+        kernel_size=kernel_size,
         spectral_floor=spectral_floor,
         relative_spectral_floor=relative_spectral_floor,
-    )
-    covariance_spectrum = covariance_spectrum_from_eta(
-        eta,
-        tuple(int(v) for v in y.shape[-3:]),
         covariance_floor=covariance_floor,
     )
-    return FrameNoiseEstimate(score, autocorrelation, eta, h_spectrum, covariance_spectrum)
+
+
+@torch.no_grad()
+def zed_denoise(score: torch.Tensor, covariance_spectrum: torch.Tensor) -> torch.Tensor:
+    r"""Compute the UNSURE-via-score estimator y + Sigma_eta s(y) correction.
+
+    The returned tensor is the correction ``Sigma_eta s(y)``. Keeping the
+    addition to ``y`` at the call site makes it explicit which measurement is
+    reconstructed and permits fair clipping only during metric computation.
+    """
+    if score.shape != covariance_spectrum.shape:
+        raise ValueError(
+            "score and covariance spectrum must have identical shapes, got "
+            f"{tuple(score.shape)} and {tuple(covariance_spectrum.shape)}"
+        )
+    return torch.fft.ifftn(
+        torch.fft.fftn(score, dim=(-3, -2, -1)) * covariance_spectrum,
+        dim=(-3, -2, -1),
+    ).real
 
 
 @torch.no_grad()

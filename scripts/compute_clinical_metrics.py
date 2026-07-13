@@ -125,8 +125,6 @@ def main() -> None:
     parser.add_argument("--ed-index", type=int, default=0)
     parser.add_argument("--es-index", type=int, default=-1)
     parser.add_argument("--coverage", type=float, default=0.95)
-    parser.add_argument("--calibration-scale", type=float, default=1.0)
-    parser.add_argument("--calibration", default=None, help="JSON produced by calibrate_clinical_bands.py")
     parser.add_argument("--roi-mask-crop", action="store_true")
     parser.add_argument("--roi-mask-margin", nargs=3, type=int, default=[0, 16, 16])
     parser.add_argument(
@@ -157,6 +155,22 @@ def main() -> None:
     cov_factor_all = item.get("deformation_covariance_factor")
     if cov_factor_all is not None:
         cov_factor_all = cov_factor_all.float()
+    motion_basis = item.get("motion_basis")
+    motion_factor_all = item.get("motion_covariance_factor")
+    if motion_basis is not None and motion_factor_all is not None:
+        motion_basis = motion_basis.float()
+        motion_factor_all = motion_factor_all.float()
+        expected_voxels = int(displacement_all[0].numel())
+        if motion_basis.ndim != 2 or int(motion_basis.shape[0]) != expected_voxels:
+            raise ValueError(
+                "motion_basis must be [3*D*H*W, rank], got "
+                f"{tuple(motion_basis.shape)} for {expected_voxels} displacement values"
+            )
+        if motion_factor_all.ndim != 3 or motion_factor_all.shape[1] != motion_basis.shape[1]:
+            raise ValueError(
+                "motion_covariance_factor must be [T, rank, hidden], got "
+                f"{tuple(motion_factor_all.shape)}"
+            )
     output_size = tuple(int(v) for v in displacement_all.shape[-3:])
     volume_size = tuple(int(v) for v in args.volume_size)
     spacing_before_resize = parse_spacing(args.spacing_mm) or nifti_spacing_dhw_mm(mask_path)
@@ -189,6 +203,8 @@ def main() -> None:
         disp = displacement_all[idx].detach().clone().requires_grad_(True)
         cov = None if cov_diag_all is None else cov_diag_all[idx]
         factor = None if cov_factor_all is None else cov_factor_all[idx]
+        if motion_basis is not None and motion_factor_all is not None:
+            factor = motion_basis @ motion_factor_all[idx]
         vol = volume_from_deformation(mask, disp, voxel_volume=voxel_volume_ml)
         wm = mean_wall_motion_mm(mask, disp, spacing_mm=spacing_mm)
         strains = mean_green_lagrange_strain(mask, disp, spacing_mm=spacing_mm)
@@ -218,26 +234,13 @@ def main() -> None:
     coverage = float(args.coverage)
     if not 0.0 < coverage < 1.0:
         raise ValueError("--coverage must be between 0 and 1")
-    calibration_scales = {
-        "ef": float(args.calibration_scale),
-        "volume_curve": float(args.calibration_scale),
-        "wall_motion": float(args.calibration_scale),
-        "strain": float(args.calibration_scale),
-    }
-    if args.calibration:
-        calibration_path = Path(args.calibration)
-        if not calibration_path.is_absolute():
-            calibration_path = root / calibration_path
-        calibration_row = json.loads(calibration_path.read_text(encoding="utf-8"))
-        learned_scales = calibration_row.get("calibration_scales", {"ef": calibration_row["calibration_scale"]})
-        calibration_scales.update({key: float(value) for key, value in learned_scales.items()})
     gaussian_multiplier = NormalDist().inv_cdf(0.5 + coverage / 2.0)
 
     def band(mean: float, variance: float | None, metric: str) -> dict[str, float | None]:
         if variance is None:
             return {"mean": mean, "variance": None, "standard_error": None, "lower": None, "upper": None}
         standard_error = float(np.sqrt(max(variance, 0.0)))
-        multiplier = gaussian_multiplier * calibration_scales[metric]
+        multiplier = gaussian_multiplier
         if metric == "ef":
             bounded_mean = float(np.clip(mean, 1.0e-5, 1.0 - 1.0e-5))
             transformed_mean = float(np.log(bounded_mean / (1.0 - bounded_mean)))
@@ -295,9 +298,10 @@ def main() -> None:
         "strain_variance": strain_var_rows,
         "prediction_bands": {
             "coverage": coverage,
-            "calibration_scales": calibration_scales,
+            "method": "model_gaussian_delta",
+            "calibration": "none",
+            "ef_cross_time_covariance": "ED/ES independence approximation",
             "gaussian_multiplier": gaussian_multiplier,
-            "empirically_calibrated": [key for key in ("ef", "volume_curve") if calibration_scales[key] != 1.0],
             "ef": band(float(ef), ef_var, "ef"),
             "volume_curve": [band(mean, variance, "volume_curve") for mean, variance in zip(volumes, volume_var, strict=True)],
             "wall_motion": [band(mean, variance, "wall_motion") for mean, variance in zip(wall_motion, wall_motion_var, strict=True)],

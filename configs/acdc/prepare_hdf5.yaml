@@ -26,8 +26,8 @@ data:
 
   # Split by patient/source before frames are expanded.
   acdc_globs:
-    - datasets/ACDC/database/training/patient*/patient*_4d.nii.gz
+    - /Volumes/Transcend/ACDC/database/training/patient*/patient*_4d.nii.gz
   acdc_val_fraction: 0.20
 
   test_globs:
-    - datasets/ACDC/database/testing/patient*/patient*_4d.nii.gz
+    - /Volumes/Transcend/ACDC/database/testing/patient*/patient*_4d.nii.gz

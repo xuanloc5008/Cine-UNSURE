@@ -295,7 +295,10 @@ def main() -> None:
         if args.eval_only and saved_selection:
             train_indices = [int(index) for index in saved_selection["train_indices"]]
             val_indices = [int(index) for index in saved_selection["val_indices"]]
-            calibration_indices = [int(index) for index in saved_selection["calibration_indices"]]
+            # Older checkpoints may contain a calibration split. It was never
+            # used to optimize the SDE-RNN, so keep eval-only compatibility
+            # without exposing calibration as part of the current workflow.
+            train_indices.extend(int(index) for index in saved_selection.get("calibration_indices", []))
             cfg["pilot_selection"] = saved_selection
             cfg["run_mode"] = "pilot"
         else:
@@ -305,26 +308,21 @@ def main() -> None:
             selected = available[: int(pilot_cfg.get("max_sequences", 62))]
             if len(selected) < 2:
                 raise ValueError(f"pilot mode requires at least 2 completed NODEO trajectories, found {len(selected)}")
-            calibration_count = max(1, round(len(selected) * float(pilot_cfg.get("calibration_fraction", 0.15))))
             val_count = max(1, round(len(selected) * float(pilot_cfg.get("val_fraction", 0.15))))
-            if calibration_count + val_count >= len(selected):
-                raise ValueError("pilot validation and calibration splits leave no training sequences")
-            calibration_indices = sorted(selected[:calibration_count])
-            val_indices = sorted(selected[calibration_count : calibration_count + val_count])
-            train_indices = sorted(selected[calibration_count + val_count :])
+            if val_count >= len(selected):
+                raise ValueError("pilot validation split leaves no training sequences")
+            val_indices = sorted(selected[:val_count])
+            train_indices = sorted(selected[val_count:])
             cfg["run_mode"] = "pilot"
             cfg["pilot_selection"] = {
                 "available_trajectories": len(available),
                 "selected_sequences": len(selected),
                 "train_sequences": len(train_indices),
                 "val_sequences": len(val_indices),
-                "calibration_sequences": len(calibration_indices),
                 "train_indices": train_indices,
                 "val_indices": val_indices,
-                "calibration_indices": calibration_indices,
                 "train_sources": [dataset.refs[index].source_path for index in train_indices],
                 "val_sources": [dataset.refs[index].source_path for index in val_indices],
-                "calibration_sources": [dataset.refs[index].source_path for index in calibration_indices],
             }
     else:
         train_indices = [index for index in (train_indices or []) if index in available]
@@ -336,8 +334,6 @@ def main() -> None:
             "with completed NODEO trajectories"
         )
     split_report = {"mode": args.mode, "train_sequences": len(train_indices), "val_sequences": len(val_indices)}
-    if args.mode == "pilot":
-        split_report["calibration_sequences"] = len(calibration_indices)
     print(json.dumps(split_report, indent=2))
     latent_dim = int(dataset[0]["z"].shape[-1])
     sde_rnn = build_sde_rnn(cfg, latent_dim=latent_dim, device=device)

@@ -8,15 +8,16 @@ DEVICE="${DEVICE:-cuda}"
 CONFIG="${CONFIG:-configs/acdc/train_sde_rnn_uncertainty.yaml}"
 CHECKPOINT="${CHECKPOINT:-runs/acdc/sde_rnn/best.pt}"
 ROOT_OUT="${ROOT_OUT:-runs/acdc/clinical}"
-VAL_H5="${VAL_H5:-runs/acdc/latent_train_val.h5}"
+TRAIN_VAL_H5="${TRAIN_VAL_H5:-runs/acdc/latent_train_val.h5}"
 TEST_H5="${TEST_H5:-runs/acdc/latent_test.h5}"
-VAL_INDEX="${VAL_INDEX:-runs/acdc/sde_sequence_index_train_val.jsonl}"
+TRAIN_VAL_INDEX="${TRAIN_VAL_INDEX:-runs/acdc/sde_sequence_index_train_val.jsonl}"
 TEST_INDEX="${TEST_INDEX:-runs/acdc/sde_sequence_index_test.jsonl}"
+TRAIN_SUMMARY="${TRAIN_SUMMARY:-runs/acdc/nodeo_dir/train/summary.jsonl}"
 VAL_SUMMARY="${VAL_SUMMARY:-runs/acdc/nodeo_dir/val/summary.jsonl}"
 TEST_SUMMARY="${TEST_SUMMARY:-runs/acdc/nodeo_dir/test/summary.jsonl}"
-CALIBRATION_MANIFEST="${ROOT_OUT}/calibration_targets.jsonl"
+TRAIN_MANIFEST="${ROOT_OUT}/train_targets.jsonl"
+VAL_MANIFEST="${ROOT_OUT}/val_targets.jsonl"
 TEST_MANIFEST="${ROOT_OUT}/test_targets.jsonl"
-CALIBRATION_FILE="${ROOT_OUT}/calibration_95.json"
 
 manifest_rows() {
   "${PYTHON_BIN}" - "$1" <<'PY'
@@ -34,8 +35,7 @@ process_manifest() {
   local h5="$2"
   local summary="$3"
   local prediction_dir="$4"
-  local calibration_file="${5:-}"
-  local chart_dir="${6:-}"
+  local chart_dir="${5:-}"
   local deformation_dir="${prediction_dir}_deformations"
   mkdir -p "${prediction_dir}" "${deformation_dir}"
   [[ -z "${chart_dir}" ]] || mkdir -p "${chart_dir}"
@@ -65,7 +65,6 @@ process_manifest() {
       --coverage 0.95
       --output "${prediction}"
     )
-    [[ -z "${calibration_file}" ]] || cmd+=(--calibration "${calibration_file}")
     "${cmd[@]}"
     if [[ -n "${chart_dir}" ]]; then
       "${PYTHON_BIN}" scripts/plot_clinical_prediction_bands.py \
@@ -77,15 +76,23 @@ process_manifest() {
 
 mkdir -p "${ROOT_OUT}"
 
-"${PYTHON_BIN}" scripts/prepare_acdc_pilot_calibration.py \
+"${PYTHON_BIN}" scripts/prepare_acdc_clinical_targets.py \
   --config "${CONFIG}" \
-  --sequence-index-file "${VAL_INDEX}" \
-  --h5 "${VAL_H5}" \
-  --split val \
-  --output "${CALIBRATION_MANIFEST}" \
+  --sequence-index-file "${TRAIN_VAL_INDEX}" \
+  --h5 "${TRAIN_VAL_H5}" \
+  --split train \
+  --output "${TRAIN_MANIFEST}" \
   --label 3
 
-"${PYTHON_BIN}" scripts/prepare_acdc_pilot_calibration.py \
+"${PYTHON_BIN}" scripts/prepare_acdc_clinical_targets.py \
+  --config "${CONFIG}" \
+  --sequence-index-file "${TRAIN_VAL_INDEX}" \
+  --h5 "${TRAIN_VAL_H5}" \
+  --split val \
+  --output "${VAL_MANIFEST}" \
+  --label 3
+
+"${PYTHON_BIN}" scripts/prepare_acdc_clinical_targets.py \
   --config "${CONFIG}" \
   --sequence-index-file "${TEST_INDEX}" \
   --h5 "${TEST_H5}" \
@@ -93,23 +100,24 @@ mkdir -p "${ROOT_OUT}"
   --output "${TEST_MANIFEST}" \
   --label 3
 
-process_manifest "${CALIBRATION_MANIFEST}" "${VAL_H5}" "${VAL_SUMMARY}" "${ROOT_OUT}/calibration_predictions"
+process_manifest \
+  "${TRAIN_MANIFEST}" "${TRAIN_VAL_H5}" "${TRAIN_SUMMARY}" \
+  "${ROOT_OUT}/train_predictions"
 
-"${PYTHON_BIN}" scripts/calibrate_clinical_bands.py \
-  --predictions "${ROOT_OUT}/calibration_predictions/*.json" \
-  --targets "${CALIBRATION_MANIFEST}" \
-  --coverage 0.95 \
-  --output "${CALIBRATION_FILE}"
+process_manifest \
+  "${VAL_MANIFEST}" "${TRAIN_VAL_H5}" "${VAL_SUMMARY}" \
+  "${ROOT_OUT}/val_predictions"
 
 process_manifest \
   "${TEST_MANIFEST}" "${TEST_H5}" "${TEST_SUMMARY}" \
-  "${ROOT_OUT}/test_predictions" "${CALIBRATION_FILE}" "${ROOT_OUT}/test_charts"
+  "${ROOT_OUT}/test_predictions" "${ROOT_OUT}/test_charts"
 
 "${PYTHON_BIN}" scripts/evaluate_clinical_prediction_bands.py \
   --predictions "${ROOT_OUT}/test_predictions/*.json" \
   --targets "${TEST_MANIFEST}" \
   --output "${ROOT_OUT}/test_evaluation_summary.json"
 
-echo "Calibration: ${CALIBRATION_FILE}"
-echo "Independent ACDC test: ${ROOT_OUT}/test_evaluation_summary.json"
+echo "Independent ACDC test (direct model uncertainty): ${ROOT_OUT}/test_evaluation_summary.json"
+echo "Clinical train features: ${ROOT_OUT}/train_predictions"
+echo "Clinical validation features: ${ROOT_OUT}/val_predictions"
 echo "Charts: ${ROOT_OUT}/test_charts"

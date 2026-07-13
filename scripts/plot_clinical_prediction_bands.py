@@ -14,7 +14,7 @@ def plot_band(ax, times, bands, title: str, ylabel: str) -> None:
     lower = np.asarray([row["lower"] for row in bands], dtype=float)
     upper = np.asarray([row["upper"] for row in bands], dtype=float)
     ax.plot(times, mean, color="#1769aa", linewidth=2, label="Mean")
-    ax.fill_between(times, lower, upper, color="#5aa9e6", alpha=0.32, label="Calibrated prediction band")
+    ax.fill_between(times, lower, upper, color="#5aa9e6", alpha=0.32, label="Model uncertainty band")
     ax.set_title(title)
     ax.set_xlabel("Normalized cardiac time")
     ax.set_ylabel(ylabel)
@@ -55,10 +55,8 @@ def main() -> None:
     axes[0, 2].set_ylabel("EF")
     axes[0, 2].grid(axis="y", alpha=0.25)
     axes[0, 0].legend(loc="best")
-    calibrated = ", ".join(bands.get("empirically_calibrated", [])) or "none"
     fig.suptitle(
-        f"Clinical trajectories with {100 * float(bands['coverage']):.0f}% uncertainty bands "
-        f"(empirically calibrated: {calibrated})",
+        f"Clinical trajectories with {100 * float(bands['coverage']):.0f}% model-derived uncertainty bands",
         fontsize=14,
     )
     output = Path(args.output)

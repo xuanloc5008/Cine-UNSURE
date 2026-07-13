@@ -1,0 +1,164 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\citation{qin2018joint}
+\citation{chen2018neural}
+\citation{li2020scalable,tzen2019neural}
+\citation{wu2022nodeo}
+\citation{dahale2023general}
+\citation{fu2025cinema}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{1}{section.1}\protected@file@percent }
+\newlabel{sec:intro}{{1}{1}{Introduction}{section.1}{}}
+\citation{chen2018neural}
+\citation{wu2022nodeo}
+\citation{wu2024sequentialnodeo}
+\citation{dahale2023general}
+\citation{fu2025cinema}
+\citation{multimae}
+\citation{convmae}
+\citation{qin2018joint,qin2020biomechanics}
+\citation{baumgartner2019phiseg}
+\@writefile{toc}{\contentsline {section}{\numberline {2}Related Work}{2}{section.2}\protected@file@percent }
+\newlabel{sec:related}{{2}{2}{Related Work}{section.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Neural ODEs and SDEs for Registration}{2}{subsection.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Uncertainty Quantification in Neural SDEs}{2}{subsection.2.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3}Foundation Models for Cardiac MRI}{2}{subsection.2.3}\protected@file@percent }
+\citation{vovk2005algorithmic}
+\citation{tachella2025unsure}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.4}Cardiac Function Assessment}{3}{subsection.2.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.5}Conformal Prediction and Prediction Bands}{3}{subsection.2.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Proposed Framework}{3}{section.3}\protected@file@percent }
+\newlabel{sec:method}{{3}{3}{Proposed Framework}{section.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Problem Formulation}{3}{subsection.3.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}CineMA Encoder as Observation Model}{3}{subsection.3.2}\protected@file@percent }
+\newlabel{sec:cinema_encoder}{{3.2}{3}{CineMA Encoder as Observation Model}{subsection.3.2}{}}
+\newlabel{eq:cinema_encode}{{1}{3}{CineMA Encoder as Observation Model}{equation.1}{}}
+\newlabel{eq:obs_cinema}{{2}{3}{CineMA Encoder as Observation Model}{equation.2}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.2.1}Data-Driven Observation Covariance via C-UNSURE}{3}{subsubsection.3.2.1}\protected@file@percent }
+\newlabel{sec:cunsure}{{3.2.1}{3}{Data-Driven Observation Covariance via C-UNSURE}{subsubsection.3.2.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{Noise estimation in image space.}{3}{section*.2}\protected@file@percent }
+\newlabel{eq:img_noise}{{3}{3}{Noise estimation in image space}{equation.3}{}}
+\citation{tachella2025unsure}
+\newlabel{eq:cunsure}{{4}{4}{Noise estimation in image space}{equation.4}{}}
+\newlabel{eq:score_training}{{5}{4}{Noise estimation in image space}{equation.5}{}}
+\newlabel{eq:frame_score_autocorr}{{6}{4}{Noise estimation in image space}{equation.6}{}}
+\newlabel{eq:frame_eta_closed_form}{{7}{4}{Noise estimation in image space}{equation.7}{}}
+\newlabel{eq:img_cov}{{8}{4}{Noise estimation in image space}{equation.8}{}}
+\@writefile{toc}{\contentsline {paragraph}{Propagation through the frozen encoder.}{4}{section*.3}\protected@file@percent }
+\newlabel{eq:enc_lin}{{9}{4}{Propagation through the frozen encoder}{equation.9}{}}
+\newlabel{eq:latent_cov}{{10}{4}{Propagation through the frozen encoder}{equation.10}{}}
+\@writefile{toc}{\contentsline {paragraph}{Matrix-free Monte-Carlo estimator.}{4}{section*.4}\protected@file@percent }
+\newlabel{eq:mc_jvp}{{13}{4}{Matrix-free Monte-Carlo estimator}{equation.13}{}}
+\@writefile{toc}{\contentsline {paragraph}{Role in covariance propagation.}{4}{section*.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Remarks.}{4}{section*.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Neural SDE for Cardiac Deformation}{5}{subsection.3.3}\protected@file@percent }
+\newlabel{sec:neural_sde_deformation}{{3.3}{5}{Neural SDE for Cardiac Deformation}{subsection.3.3}{}}
+\newlabel{eq:warp_convention}{{14}{5}{Neural SDE for Cardiac Deformation}{equation.14}{}}
+\newlabel{eq:disp_def}{{15}{5}{Neural SDE for Cardiac Deformation}{equation.15}{}}
+\newlabel{eq:def_decoder}{{16}{5}{Neural SDE for Cardiac Deformation}{equation.16}{}}
+\newlabel{eq:sde}{{17}{5}{Neural SDE for Cardiac Deformation}{equation.17}{}}
+\@writefile{toc}{\contentsline {paragraph}{Connection to NODEO.}{5}{section*.7}\protected@file@percent }
+\newlabel{eq:velocity_decoder}{{18}{5}{Connection to NODEO}{equation.18}{}}
+\newlabel{eq:velocity_flow}{{19}{5}{Connection to NODEO}{equation.19}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}CVRNN Update at Observed Frames}{5}{subsection.3.4}\protected@file@percent }
+\newlabel{sec:cvgruu_update_clarified}{{3.4}{5}{CVRNN Update at Observed Frames}{subsection.3.4}{}}
+\newlabel{eq:sde_solve}{{20}{5}{CVRNN Update at Observed Frames}{equation.20}{}}
+\newlabel{eq:gru_update}{{21}{5}{CVRNN Update at Observed Frames}{equation.21}{}}
+\newlabel{eq:cov_update}{{22}{5}{CVRNN Update at Observed Frames}{equation.22}{}}
+\newlabel{eq:cvgru_jacs}{{23}{5}{CVRNN Update at Observed Frames}{equation.23}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.5}Analytical Uncertainty Propagation}{5}{subsection.3.5}\protected@file@percent }
+\newlabel{sec:analytical_uncertainty_clarified}{{3.5}{5}{Analytical Uncertainty Propagation}{subsection.3.5}{}}
+\newlabel{eq:mean_prop}{{24}{5}{Analytical Uncertainty Propagation}{equation.24}{}}
+\newlabel{eq:cov_prop}{{25}{5}{Analytical Uncertainty Propagation}{equation.25}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.5.1}Output Transformation}{5}{subsubsection.3.5.1}\protected@file@percent }
+\newlabel{eq:output_mean}{{28}{5}{Output Transformation}{equation.28}{}}
+\newlabel{eq:def_jac}{{29}{5}{Output Transformation}{equation.29}{}}
+\newlabel{eq:output_cov}{{30}{5}{Output Transformation}{equation.30}{}}
+\newlabel{eq:def_cov_diag}{{31}{5}{Output Transformation}{equation.31}{}}
+\newlabel{eq:def_cov_block}{{32}{5}{Output Transformation}{equation.32}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.6}Training Objective for Deformation Fields}{6}{subsection.3.6}\protected@file@percent }
+\newlabel{sec:deformation_training_objective}{{3.6}{6}{Training Objective for Deformation Fields}{subsection.3.6}{}}
+\@writefile{toc}{\contentsline {paragraph}{Image registration loss.}{6}{section*.8}\protected@file@percent }
+\newlabel{eq:l_img}{{34}{6}{Image registration loss}{equation.34}{}}
+\@writefile{toc}{\contentsline {paragraph}{Deformation regularization.}{6}{section*.9}\protected@file@percent }
+\newlabel{eq:l_jdet}{{35}{6}{Deformation regularization}{equation.35}{}}
+\newlabel{eq:l_mag}{{36}{6}{Deformation regularization}{equation.36}{}}
+\newlabel{eq:l_smt}{{37}{6}{Deformation regularization}{equation.37}{}}
+\@writefile{toc}{\contentsline {paragraph}{Total objective.}{6}{section*.10}\protected@file@percent }
+\newlabel{eq:l_total}{{38}{6}{Total objective}{equation.38}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.7}Training Procedure}{6}{subsection.3.7}\protected@file@percent }
+\newlabel{sec:training_procedure}{{3.7}{6}{Training Procedure}{subsection.3.7}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {4}From Deformation Uncertainty to Clinical Metric Prediction Bands}{6}{section.4}\protected@file@percent }
+\newlabel{sec:clinical}{{4}{6}{From Deformation Uncertainty to Clinical Metric Prediction Bands}{section.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}General Propagation Rule}{6}{subsection.4.1}\protected@file@percent }
+\newlabel{eq:metric_mean}{{39}{6}{General Propagation Rule}{equation.39}{}}
+\newlabel{eq:metric_var}{{40}{6}{General Propagation Rule}{equation.40}{}}
+\newlabel{eq:pred_band}{{41}{6}{General Propagation Rule}{equation.41}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Ejection Fraction (EF)}{7}{subsection.4.2}\protected@file@percent }
+\newlabel{eq:ef_def}{{42}{7}{Ejection Fraction (EF)}{equation.42}{}}
+\newlabel{eq:warped_volume}{{43}{7}{Ejection Fraction (EF)}{equation.43}{}}
+\newlabel{eq:volume}{{44}{7}{Ejection Fraction (EF)}{equation.44}{}}
+\newlabel{eq:vol_sensitivity}{{45}{7}{Ejection Fraction (EF)}{equation.45}{}}
+\newlabel{eq:jac_det_deriv}{{46}{7}{Ejection Fraction (EF)}{equation.46}{}}
+\newlabel{eq:vol_var}{{47}{7}{Ejection Fraction (EF)}{equation.47}{}}
+\newlabel{eq:ef_var}{{48}{7}{Ejection Fraction (EF)}{equation.48}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Regional Wall Motion}{7}{subsection.4.3}\protected@file@percent }
+\newlabel{eq:wm_def}{{49}{7}{Regional Wall Motion}{equation.49}{}}
+\newlabel{eq:wm_jac}{{50}{7}{Regional Wall Motion}{equation.50}{}}
+\newlabel{eq:wm_var}{{51}{7}{Regional Wall Motion}{equation.51}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Myocardial Strain}{7}{subsection.4.4}\protected@file@percent }
+\newlabel{eq:strain_def}{{52}{7}{Myocardial Strain}{equation.52}{}}
+\newlabel{eq:circ_strain}{{53}{7}{Myocardial Strain}{equation.53}{}}
+\newlabel{eq:strain_sensitivity}{{54}{7}{Myocardial Strain}{equation.54}{}}
+\newlabel{eq:strain_var}{{55}{7}{Myocardial Strain}{equation.55}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.5}Prediction Band Construction}{7}{subsection.4.5}\protected@file@percent }
+\newlabel{eq:final_band}{{56}{7}{Prediction Band Construction}{equation.56}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.6}Pathology Prediction from Clinical Uncertainty}{7}{subsection.4.6}\protected@file@percent }
+\citation{bernard2018deep}
+\citation{levi2022evaluating}
+\@writefile{loa}{\contentsline {algorithm}{\numberline {1}{\ignorespaces Uncertainty-Aware Cardiac Assessment}}{8}{algorithm.1}\protected@file@percent }
+\newlabel{alg:framework}{{1}{8}{Complete Algorithm}{algorithm.1}{}}
+\newlabel{eq:pathology_probability}{{57}{8}{Pathology Prediction from Clinical Uncertainty}{equation.57}{}}
+\newlabel{eq:pathology_variance}{{58}{8}{Pathology Prediction from Clinical Uncertainty}{equation.58}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {5}Complete Algorithm}{8}{section.5}\protected@file@percent }
+\newlabel{sec:algorithm}{{5}{8}{Complete Algorithm}{section.5}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {6}Experimental Design}{8}{section.6}\protected@file@percent }
+\newlabel{sec:experiments}{{6}{8}{Experimental Design}{section.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.1}Dataset}{8}{subsection.6.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.2}Baselines}{8}{subsection.6.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.3}Evaluation Metrics}{8}{subsection.6.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.4}Expected Results}{8}{subsection.6.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7}Discussion}{9}{section.7}\protected@file@percent }
+\newlabel{sec:discussion}{{7}{9}{Discussion}{section.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.1}Advantages over Monte Carlo UQ}{9}{subsection.7.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.2}Comparison with Conformal Prediction}{9}{subsection.7.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.3}Limitations and Future Work}{9}{subsection.7.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {8}Conclusion}{9}{section.8}\protected@file@percent }
+\newlabel{sec:conclusion}{{8}{9}{Conclusion}{section.8}{}}
+\bibcite{chen2018neural}{1}
+\bibcite{li2020scalable}{2}
+\bibcite{tzen2019neural}{3}
+\bibcite{wu2022nodeo}{4}
+\bibcite{wu2024sequentialnodeo}{5}
+\bibcite{dahale2023general}{6}
+\bibcite{fu2025cinema}{7}
+\bibcite{qin2018joint}{8}
+\bibcite{qin2020biomechanics}{9}
+\bibcite{baumgartner2019phiseg}{10}
+\bibcite{vovk2005algorithmic}{11}
+\bibcite{levi2022evaluating}{12}
+\bibcite{bernard2018deep}{13}
+\bibcite{multimae}{14}
+\bibcite{convmae}{15}
+\bibcite{rubanova2019latent}{16}
+\bibcite{sarkka2019applied}{17}
+\bibcite{gal2016dropout}{18}
+\bibcite{lakshminarayanan2017simple}{19}
+\bibcite{amini2021robust}{20}
+\bibcite{song2021score}{21}
+\bibcite{kidger2021neural}{22}
+\bibcite{tachella2025unsure}{23}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Overview of the proposed uncertainty-aware cardiac function assessment framework. Each frame of the cine-MRI sequence $\{I_k\}$ is mapped by the frozen CineMA encoder $\mathcal  {E}$ into a latent observation $\bm  {z}_k$ corrupted by observation noise (Eq.~\eqref  {eq:obs_cinema}). The SDE-RNN core (dashed box) jointly propagates the mean and covariance of the hidden state: a Neural SDE evolves the state between frames, a CV-GRU cell assimilates each encoded observation, and a decoder produces the deformation field together with its covariance $\bm  {R}_k$. The deformation-field uncertainty is then propagated analytically to clinical metrics (EF, regional wall motion, myocardial strain), yielding the prediction bands of Eq.~\eqref  {eq:final_band}.}}{11}{figure.1}\protected@file@percent }
+\newlabel{fig:framework}{{1}{11}{Overview of the proposed uncertainty-aware cardiac function assessment framework. Each frame of the cine-MRI sequence $\{I_k\}$ is mapped by the frozen CineMA encoder $\mathcal {E}$ into a latent observation $\bm {z}_k$ corrupted by observation noise (Eq.~\eqref {eq:obs_cinema}). The SDE-RNN core (dashed box) jointly propagates the mean and covariance of the hidden state: a Neural SDE evolves the state between frames, a CV-GRU cell assimilates each encoded observation, and a decoder produces the deformation field together with its covariance $\bm {R}_k$. The deformation-field uncertainty is then propagated analytically to clinical metrics (EF, regional wall motion, myocardial strain), yielding the prediction bands of Eq.~\eqref {eq:final_band}}{figure.1}{}}
+\gdef \@abspage@last{11}
