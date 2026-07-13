@@ -28,6 +28,7 @@ def main() -> None:
         list(data.get("train_globs", []))
         + list(data.get("val_globs", []))
         + list(data.get("test_globs", []))
+        + list(data.get("acdc_globs", []))
         + list(data.get("mnm2_globs", [])),
         exclude,
         split_4d=False,

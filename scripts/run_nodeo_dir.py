@@ -143,11 +143,9 @@ def fit_sequence(
         optimizer.step()
         metrics = detached_metrics(terms)
         if epoch > epochs - selection_tail:
-            balance_score = 1000.0 * metrics["image"] * (
-                float(cfg["loss"]["lambda_j"]) * metrics["jdet"] + 1.0e-12
-            )
-            if balance_score < best_score:
-                best_score = balance_score
+            selection_score = metrics["loss"]
+            if selection_score < best_score:
+                best_score = selection_score
                 best_epoch = epoch
                 best_metrics = metrics
                 best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}

@@ -116,3 +116,17 @@ def delta_variance_block(metric: Tensor, displacement: Tensor, covariance_blocks
     g = grad.permute(1, 2, 3, 0)[..., None]
     blocks = covariance_blocks.to(grad)
     return torch.matmul(torch.matmul(g.transpose(-1, -2), blocks), g).sum()
+
+
+def delta_variance_factor(metric: Tensor, displacement: Tensor, covariance_factor: Tensor | None) -> Tensor | None:
+    """Delta-method variance for R_phi = L L^T without materializing R_phi."""
+
+    if covariance_factor is None:
+        return None
+    grad = torch.autograd.grad(metric, displacement, retain_graph=True, allow_unused=False)[0].reshape(-1)
+    factor = covariance_factor.to(grad)
+    if factor.ndim != 2 or factor.shape[0] != grad.numel():
+        raise ValueError(
+            f"covariance factor must be [3DHW,H], got {tuple(factor.shape)} for gradient {grad.numel()}"
+        )
+    return torch.matmul(factor.T, grad).pow(2).sum()

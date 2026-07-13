@@ -1,0 +1,33 @@
+seed: 2026
+
+data:
+  train_output: processed/acdc/train_cunsure_roi.h5
+  val_output: processed/acdc/val_cunsure_roi.h5
+  test_output: processed/acdc/test_cunsure_roi.h5
+  channels: 1
+  volume_size: [16, 96, 96]
+  train_limit:
+  val_limit:
+  test_limit:
+  normalize: percentile
+  compression: lzf
+  percentile_low: 1.0
+  percentile_high: 99.0
+  roi_mask_crop: true
+  roi_mask_margin: [0, 16, 16]
+  require_roi_mask: true
+  split_4d: true
+  time_axis: -1
+  exclude_substrings:
+    - _gt
+    - gt.nii
+    - label
+    - seg
+
+  # Split by patient/source before frames are expanded.
+  acdc_globs:
+    - datasets/ACDC/database/training/patient*/patient*_4d.nii.gz
+  acdc_val_fraction: 0.20
+
+  test_globs:
+    - datasets/ACDC/database/testing/patient*/patient*_4d.nii.gz

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from statistics import NormalDist
 from pathlib import Path
 
 import nibabel as nib
@@ -14,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cunsure_monai3d.clinical_metrics import (
     delta_variance_diag,
+    delta_variance_factor,
     ejection_fraction,
     mean_green_lagrange_strain,
     mean_wall_motion_mm,
@@ -21,6 +23,7 @@ from cunsure_monai3d.clinical_metrics import (
     volume_from_deformation,
 )
 from cunsure_monai3d.config import project_root, resolve_path
+from cunsure_monai3d.deformation_data import _bbox_from_mask, _mask_to_dhw, crop_or_pad_around_bbox
 from cunsure_monai3d.preprocess import center_crop_or_pad, extract_frame_array
 
 
@@ -69,10 +72,30 @@ def load_reference_mask(
     volume_size: tuple[int, int, int],
     output_size: tuple[int, int, int],
     labels: list[float] | None,
+    roi_mask_crop: bool,
+    roi_mask_margin: tuple[int, int, int],
 ) -> torch.Tensor:
     arr = np.asarray(nib.load(str(path)).get_fdata(dtype=np.float32))
     vol = extract_frame_array(arr, time_index, time_axis=time_axis, path=path)
-    vol = center_crop_or_pad(vol, volume_size)
+    bbox = None
+    if roi_mask_crop:
+        union = None
+        candidates = [
+            candidate
+            for candidate in sorted(path.parent.glob("*_gt*"))
+            if candidate.name.endswith(".nii") or candidate.name.endswith(".nii.gz")
+        ]
+        for candidate in candidates:
+            candidate_mask = _mask_to_dhw(
+                nib.load(str(candidate)).get_fdata(dtype=np.float32),
+                time_axis=time_axis,
+                path=candidate,
+            )
+            union = candidate_mask if union is None else np.logical_or(union, candidate_mask)
+        if union is None:
+            raise FileNotFoundError(f"no sibling ROI masks found next to {path}")
+        bbox = _bbox_from_mask(union, roi_mask_margin)
+    vol = crop_or_pad_around_bbox(vol, bbox, volume_size) if roi_mask_crop else center_crop_or_pad(vol, volume_size)
     mask = torch.from_numpy(vol).float()
     if labels:
         binary = torch.zeros_like(mask)
@@ -101,6 +124,16 @@ def main() -> None:
     parser.add_argument("--voxel-volume", type=float, default=None, help="optional output voxel volume in mm^3")
     parser.add_argument("--ed-index", type=int, default=0)
     parser.add_argument("--es-index", type=int, default=-1)
+    parser.add_argument("--coverage", type=float, default=0.95)
+    parser.add_argument("--calibration-scale", type=float, default=1.0)
+    parser.add_argument("--calibration", default=None, help="JSON produced by calibrate_clinical_bands.py")
+    parser.add_argument("--roi-mask-crop", action="store_true")
+    parser.add_argument("--roi-mask-margin", nargs=3, type=int, default=[0, 16, 16])
+    parser.add_argument(
+        "--displacement-key",
+        default="auto",
+        choices=("auto", "nodeo_displacement", "total_displacement", "residual_displacement", "displacement"),
+    )
     args = parser.parse_args()
 
     root = project_root()
@@ -111,11 +144,19 @@ def main() -> None:
         mask_path = root / mask_path
 
     item = torch.load(deformation_path, map_location="cpu", weights_only=False)
-    displacement_key = "displacement" if "displacement" in item else "total_displacement"
+    if args.displacement_key == "auto":
+        displacement_key = "displacement" if "displacement" in item else "total_displacement"
+    else:
+        displacement_key = args.displacement_key
+    if displacement_key not in item:
+        raise KeyError(f"deformation file has no displacement key: {displacement_key}")
     displacement_all = item[displacement_key].float()
     cov_diag_all = item.get("deformation_covariance_diag")
     if cov_diag_all is not None:
         cov_diag_all = cov_diag_all.float().clamp_min(0)
+    cov_factor_all = item.get("deformation_covariance_factor")
+    if cov_factor_all is not None:
+        cov_factor_all = cov_factor_all.float()
     output_size = tuple(int(v) for v in displacement_all.shape[-3:])
     volume_size = tuple(int(v) for v in args.volume_size)
     spacing_before_resize = parse_spacing(args.spacing_mm) or nifti_spacing_dhw_mm(mask_path)
@@ -133,6 +174,8 @@ def main() -> None:
         volume_size=volume_size,
         output_size=output_size,
         labels=parse_labels(args.labels),
+        roi_mask_crop=bool(args.roi_mask_crop),
+        roi_mask_margin=tuple(int(v) for v in args.roi_mask_margin),
     )
 
     volumes: list[float] = []
@@ -145,15 +188,19 @@ def main() -> None:
     for idx in range(displacement_all.shape[0]):
         disp = displacement_all[idx].detach().clone().requires_grad_(True)
         cov = None if cov_diag_all is None else cov_diag_all[idx]
+        factor = None if cov_factor_all is None else cov_factor_all[idx]
         vol = volume_from_deformation(mask, disp, voxel_volume=voxel_volume_ml)
         wm = mean_wall_motion_mm(mask, disp, spacing_mm=spacing_mm)
         strains = mean_green_lagrange_strain(mask, disp, spacing_mm=spacing_mm)
         volumes.append(float(vol.detach()))
-        volume_var.append(variance_to_float(delta_variance_diag(vol, disp, cov)))
+        volume_var.append(variance_to_float(delta_variance_factor(vol, disp, factor) if factor is not None else delta_variance_diag(vol, disp, cov)))
         wall_motion.append(float(wm.detach()))
-        wall_motion_var.append(variance_to_float(delta_variance_diag(wm, disp, cov)))
+        wall_motion_var.append(variance_to_float(delta_variance_factor(wm, disp, factor) if factor is not None else delta_variance_diag(wm, disp, cov)))
         strain_rows.append({key: float(value.detach()) for key, value in strains.items()})
-        strain_var_rows.append({key: variance_to_float(delta_variance_diag(value, disp, cov)) for key, value in strains.items()})
+        strain_var_rows.append({
+            key: variance_to_float(delta_variance_factor(value, disp, factor) if factor is not None else delta_variance_diag(value, disp, cov))
+            for key, value in strains.items()
+        })
 
     ed_index = int(args.ed_index)
     es_index = int(args.es_index)
@@ -168,8 +215,61 @@ def main() -> None:
         d_ed = v_es / v_ed.clamp_min(1.0e-6).pow(2)
         ef_var = float(d_ed.pow(2) * float(volume_var[ed_index]) + d_es.pow(2) * float(volume_var[es_index]))
 
+    coverage = float(args.coverage)
+    if not 0.0 < coverage < 1.0:
+        raise ValueError("--coverage must be between 0 and 1")
+    calibration_scales = {
+        "ef": float(args.calibration_scale),
+        "volume_curve": float(args.calibration_scale),
+        "wall_motion": float(args.calibration_scale),
+        "strain": float(args.calibration_scale),
+    }
+    if args.calibration:
+        calibration_path = Path(args.calibration)
+        if not calibration_path.is_absolute():
+            calibration_path = root / calibration_path
+        calibration_row = json.loads(calibration_path.read_text(encoding="utf-8"))
+        learned_scales = calibration_row.get("calibration_scales", {"ef": calibration_row["calibration_scale"]})
+        calibration_scales.update({key: float(value) for key, value in learned_scales.items()})
+    gaussian_multiplier = NormalDist().inv_cdf(0.5 + coverage / 2.0)
+
+    def band(mean: float, variance: float | None, metric: str) -> dict[str, float | None]:
+        if variance is None:
+            return {"mean": mean, "variance": None, "standard_error": None, "lower": None, "upper": None}
+        standard_error = float(np.sqrt(max(variance, 0.0)))
+        multiplier = gaussian_multiplier * calibration_scales[metric]
+        if metric == "ef":
+            bounded_mean = float(np.clip(mean, 1.0e-5, 1.0 - 1.0e-5))
+            transformed_mean = float(np.log(bounded_mean / (1.0 - bounded_mean)))
+            transformed_se = standard_error / (bounded_mean * (1.0 - bounded_mean))
+            lower_logit = float(np.clip(transformed_mean - multiplier * transformed_se, -40.0, 40.0))
+            upper_logit = float(np.clip(transformed_mean + multiplier * transformed_se, -40.0, 40.0))
+            lower = 1.0 / (1.0 + np.exp(-lower_logit))
+            upper = 1.0 / (1.0 + np.exp(-upper_logit))
+            transform = "logit"
+        elif metric == "volume_curve":
+            positive_mean = max(mean, 1.0e-6)
+            transformed_mean = float(np.log(positive_mean))
+            transformed_se = standard_error / positive_mean
+            lower = float(np.exp(np.clip(transformed_mean - multiplier * transformed_se, -40.0, 40.0)))
+            upper = float(np.exp(np.clip(transformed_mean + multiplier * transformed_se, -40.0, 40.0)))
+            transform = "log"
+        else:
+            lower = mean - multiplier * standard_error
+            upper = mean + multiplier * standard_error
+            transform = "identity"
+        return {
+            "mean": mean,
+            "variance": variance,
+            "standard_error": standard_error,
+            "lower": lower,
+            "upper": upper,
+            "transform": transform,
+        }
+
     result = {
         "deformation": str(deformation_path),
+        "displacement_key": displacement_key,
         "reference_mask": str(mask_path),
         "dataset": item.get("dataset", ""),
         "source_path": item.get("source_path", ""),
@@ -193,6 +293,19 @@ def main() -> None:
         "wall_motion_variance": wall_motion_var,
         "strain_mean": strain_rows,
         "strain_variance": strain_var_rows,
+        "prediction_bands": {
+            "coverage": coverage,
+            "calibration_scales": calibration_scales,
+            "gaussian_multiplier": gaussian_multiplier,
+            "empirically_calibrated": [key for key in ("ef", "volume_curve") if calibration_scales[key] != 1.0],
+            "ef": band(float(ef), ef_var, "ef"),
+            "volume_curve": [band(mean, variance, "volume_curve") for mean, variance in zip(volumes, volume_var, strict=True)],
+            "wall_motion": [band(mean, variance, "wall_motion") for mean, variance in zip(wall_motion, wall_motion_var, strict=True)],
+            "strain": [
+                {key: band(row[key], variance_row[key], "strain") for key in row}
+                for row, variance_row in zip(strain_rows, strain_var_rows, strict=True)
+            ],
+        },
     }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)

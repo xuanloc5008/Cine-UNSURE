@@ -1,17 +1,10 @@
 seed: 2026
 device: auto
-
-pilot:
-  max_sequences: 62
-  val_fraction: 0.15
-  calibration_fraction: 0.15
-  seed: 2026
-
 data:
-  h5: runs/selected/latent_observations_cinema_score_cunsure_roi.h5
-  sequence_index: runs/selected/sde_sequence_index_roi.jsonl
+  h5: runs/acdc/latent_train_val.h5
+  sequence_index: runs/acdc/sde_sequence_index_train_val.jsonl
   min_length: 2
-  covariance: full
+  covariance: diag
   normalize_time: true
   time_axis: -1
   volume_size: [16, 96, 96]
@@ -31,12 +24,10 @@ data:
       to: datasets
     - from: /workspace/Cine-UNSURE/datasets
       to: datasets
-
 nodeo:
   trajectory_summaries:
-    - runs/nodeo_dir_roi/train/summary.jsonl
-    - runs/nodeo_dir_roi/val/summary.jsonl
-
+    - runs/acdc/nodeo_dir/train/summary.jsonl
+    - runs/acdc/nodeo_dir/val/summary.jsonl
 model:
   image_shape: [16, 96, 96]
   hidden_dim: 16
@@ -46,7 +37,6 @@ model:
   init_covariance: 0.0001
   residual_scale: 2.0
   sde_steps_per_interval: 1
-
 loss:
   ncc_win: 9
   lambda_j: 2.5
@@ -54,7 +44,6 @@ loss:
   lambda_unc: 0.01
   uncertainty_variance_floor: 0.0001
   jitter: 0.000001
-
 optim:
   epochs: 50
   lr: 0.00005
@@ -62,7 +51,6 @@ optim:
   grad_clip: 1.0
   early_stopping_patience: 8
   early_stopping_min_delta: 0.00001
-
 output:
-  run_dir: runs/sde_rnn_uncertainty_roi
+  run_dir: runs/acdc/sde_rnn
   checkpoint_every: 10

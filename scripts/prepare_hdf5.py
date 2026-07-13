@@ -22,19 +22,19 @@ def scan(data: dict, root: Path, key: str, exclude: list[str]) -> list[FrameRef]
     )
 
 
-def split_mnm2_by_source(
-    refs: list[FrameRef], *, test_fraction: float, seed: int
+def split_by_source(
+    refs: list[FrameRef], *, held_out_fraction: float, seed: int, fraction_name: str
 ) -> tuple[list[FrameRef], list[FrameRef]]:
-    if not 0.0 <= test_fraction < 1.0:
-        raise ValueError("mnm2_test_fraction must be in [0, 1)")
+    if not 0.0 <= held_out_fraction < 1.0:
+        raise ValueError(f"{fraction_name} must be in [0, 1)")
     source_paths = sorted({ref.path for ref in refs})
     shuffled = source_paths.copy()
     random.Random(seed).shuffle(shuffled)
-    test_count = int(round(len(shuffled) * test_fraction))
-    test_sources = set(shuffled[:test_count])
-    train_refs = [ref for ref in refs if ref.path not in test_sources]
-    test_refs = [ref for ref in refs if ref.path in test_sources]
-    return train_refs, test_refs
+    held_out_count = int(round(len(shuffled) * held_out_fraction))
+    held_out_sources = set(shuffled[:held_out_count])
+    retained_refs = [ref for ref in refs if ref.path not in held_out_sources]
+    held_out_refs = [ref for ref in refs if ref.path in held_out_sources]
+    return retained_refs, held_out_refs
 
 
 def assert_disjoint_splits(splits: dict[str, list[FrameRef]]) -> None:
@@ -87,11 +87,23 @@ def main() -> None:
     train_refs = scan(data, root, "train_globs", exclude)
     val_refs = scan(data, root, "val_globs", exclude)
     test_refs = scan(data, root, "test_globs", exclude)
+
+    acdc_refs = scan(data, root, "acdc_globs", exclude)
+    acdc_train, acdc_val = split_by_source(
+        acdc_refs,
+        held_out_fraction=float(data.get("acdc_val_fraction", 0.20)),
+        seed=int(cfg.get("seed", 2026)) + 1,
+        fraction_name="acdc_val_fraction",
+    )
+    train_refs.extend(acdc_train)
+    val_refs.extend(acdc_val)
+
     mnm2_refs = scan(data, root, "mnm2_globs", exclude)
-    mnm2_train, mnm2_test = split_mnm2_by_source(
+    mnm2_train, mnm2_test = split_by_source(
         mnm2_refs,
-        test_fraction=float(data.get("mnm2_test_fraction", 0.30)),
+        held_out_fraction=float(data.get("mnm2_test_fraction", 0.30)),
         seed=int(cfg.get("seed", 2026)),
+        fraction_name="mnm2_test_fraction",
     )
     train_refs.extend(mnm2_train)
     test_refs.extend(mnm2_test)
@@ -101,6 +113,7 @@ def main() -> None:
     print(f"found train frames: {len(train_refs)}")
     print(f"found val frames: {len(val_refs)}")
     print(f"found test frames: {len(test_refs)}")
+    print(f"ACDC source split: train={len({r.path for r in acdc_train})}, val={len({r.path for r in acdc_val})}")
     print(f"MnM2 source split: train={len({r.path for r in mnm2_train})}, test={len({r.path for r in mnm2_test})}")
 
     for name, refs in splits.items():

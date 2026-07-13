@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from cunsure_monai3d.config import as_tuple_int, load_yaml, project_root, resolve_path, select_device
 from cunsure_monai3d.deformation_data import DeformationSequenceDataset
 from cunsure_monai3d.nodeo_ops import LocalNCC3D, SpatialTransformer3D, negative_jacobian_loss, smoothness_loss
-from cunsure_monai3d.nodeo_roi_data import NODEOTrajectoryStore
+from cunsure_monai3d.nodeo_roi_data import NODEOTrajectoryStore, canonical_source_key
 from cunsure_monai3d.sde_rnn_uncertainty import NeuralSDERNNUncertainty
 
 
@@ -110,6 +110,9 @@ def sde_rnn_sequence_loss(
     device: torch.device,
     lambda_j: float,
     lambda_df: float,
+    lambda_unc: float,
+    uncertainty_variance_floor: float,
+    uncertainty_jitter: float,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     images = batch["images"].to(device)
     z = batch["z"].to(device)
@@ -117,7 +120,7 @@ def sde_rnn_sequence_loss(
     times = batch["times"].to(device)
     if images.shape[0] < 2:
         zero = images.new_tensor(0.0)
-        return zero, {"loss": 0.0, "image": 0.0, "jdet": 0.0, "smooth": 0.0}
+        return zero, {"loss": 0.0, "image": 0.0, "jdet": 0.0, "smooth": 0.0, "unc_nll": 0.0, "mean_image_variance": 0.0}
 
     phi_bar = trajectory_store.load(str(batch["source_path"])).to(device)
     if phi_bar.shape[0] != images.shape[0]:
@@ -133,12 +136,37 @@ def sde_rnn_sequence_loss(
     loss_img = ncc(target, warped)
     loss_j = negative_jacobian_loss(phi)
     loss_s = smoothness_loss(out.residual_displacement[1:])
-    loss = loss_img + float(lambda_j) * loss_j + float(lambda_df) * loss_s
+
+    # First-order image covariance: delta I = grad(I_warped)^T delta phi.
+    # L_phi is kept low rank, so only diag(J_I L_phi L_phi^T J_I^T)
+    # is formed and the dense voxel covariance is never materialized.
+    uncertainty_terms: list[torch.Tensor] = []
+    variance_terms: list[torch.Tensor] = []
+    for frame in range(1, images.shape[0]):
+        factor = sde_rnn.output.covariance_factor(
+            out.hidden_mean[frame],
+            out.hidden_covariance[frame],
+            times[frame],
+            jitter=float(uncertainty_jitter),
+            covariance_grad=True,
+        ).reshape(3, *sde_rnn.image_shape, sde_rnn.hidden_dim)
+        warped_frame = warped[frame - 1, 0]
+        gradients = torch.stack(torch.gradient(warped_frame, dim=(0, 1, 2)), dim=0)
+        image_factor = torch.einsum("cdhw,cdhwq->dhwq", gradients, factor)
+        image_variance = image_factor.pow(2).sum(dim=-1) + float(uncertainty_variance_floor)
+        residual = target[frame - 1, 0] - warped_frame
+        uncertainty_terms.append(0.5 * (residual.pow(2) / image_variance + image_variance.log()).mean())
+        variance_terms.append(image_variance.mean())
+    loss_unc = torch.stack(uncertainty_terms).mean()
+    mean_image_variance = torch.stack(variance_terms).mean()
+    loss = loss_img + float(lambda_j) * loss_j + float(lambda_df) * loss_s + float(lambda_unc) * loss_unc
     metrics = {
         "loss": float(loss.detach().cpu()),
         "image": float(loss_img.detach().cpu()),
         "jdet": float(loss_j.detach().cpu()),
         "smooth": float(loss_s.detach().cpu()),
+        "unc_nll": float(loss_unc.detach().cpu()),
+        "mean_image_variance": float(mean_image_variance.detach().cpu()),
     }
     return loss, metrics
 
@@ -158,7 +186,7 @@ def run_epoch(
     sde_rnn.train(is_train)
     ncc = LocalNCC3D(win=int(loss_cfg.get("ncc_win", 9))).to(device)
     transformer = SpatialTransformer3D(image_shape).to(device)
-    totals = {"loss": 0.0, "image": 0.0, "jdet": 0.0, "smooth": 0.0}
+    totals = {"loss": 0.0, "image": 0.0, "jdet": 0.0, "smooth": 0.0, "unc_nll": 0.0, "mean_image_variance": 0.0}
     count = 0
     for batch in tqdm(loader, desc="train" if is_train else "val", leave=False):
         loss, metrics = sde_rnn_sequence_loss(
@@ -170,6 +198,9 @@ def run_epoch(
             device=device,
             lambda_j=float(loss_cfg["lambda_j"]),
             lambda_df=float(loss_cfg["lambda_df"]),
+            lambda_unc=float(loss_cfg.get("lambda_unc", 0.01)),
+            uncertainty_variance_floor=float(loss_cfg.get("uncertainty_variance_floor", 1.0e-4)),
+            uncertainty_jitter=float(loss_cfg.get("jitter", 1.0e-6)),
         )
         if is_train:
             optimizer.zero_grad(set_to_none=True)
@@ -191,10 +222,16 @@ def save_checkpoint(path: Path, model: NeuralSDERNNUncertainty, cfg: dict, epoch
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/train_sde_rnn_uncertainty.yaml")
+    parser.add_argument("--mode", choices=("full", "pilot"), default="full")
+    parser.add_argument("--eval-only", action="store_true")
+    parser.add_argument("--checkpoint")
     args = parser.parse_args()
 
     root = project_root()
     cfg = load_yaml(root / args.config)
+    checkpoint_payload = None
+    if args.checkpoint:
+        checkpoint_payload = torch.load(resolve_path(args.checkpoint, root), map_location="cpu", weights_only=False)
     set_seed(int(cfg.get("seed", 2026)))
     device = select_device(cfg.get("device", "auto"))
     configure_torch_speed(device)
@@ -232,9 +269,80 @@ def main() -> None:
         val_indices = order[:val_count]
         train_indices = order[val_count:]
 
-    trajectory_store = NODEOTrajectoryStore(list(cfg["nodeo"]["trajectory_summaries"]), root=root)
+    configured_summaries = list(cfg["nodeo"]["trajectory_summaries"])
+    if args.mode == "pilot":
+        existing_summaries = [
+            summary
+            for summary in configured_summaries
+            if (Path(summary).is_absolute() and Path(summary).exists())
+            or (not Path(summary).is_absolute() and (root / summary).exists())
+        ]
+        if not existing_summaries:
+            raise FileNotFoundError("pilot mode found no completed NODEO summary files")
+        missing_summaries = [summary for summary in configured_summaries if summary not in existing_summaries]
+        if missing_summaries:
+            print(json.dumps({"pilot_ignored_missing_nodeo_summaries": missing_summaries}, indent=2))
+        trajectory_store = NODEOTrajectoryStore(existing_summaries, root=root)
+    else:
+        trajectory_store = NODEOTrajectoryStore(configured_summaries, root=root)
+    available = [
+        index
+        for index, ref in enumerate(dataset.refs)
+        if canonical_source_key(ref.source_path) in trajectory_store.outputs
+    ]
+    if args.mode == "pilot":
+        saved_selection = None if checkpoint_payload is None else checkpoint_payload["config"].get("pilot_selection")
+        if args.eval_only and saved_selection:
+            train_indices = [int(index) for index in saved_selection["train_indices"]]
+            val_indices = [int(index) for index in saved_selection["val_indices"]]
+            calibration_indices = [int(index) for index in saved_selection["calibration_indices"]]
+            cfg["pilot_selection"] = saved_selection
+            cfg["run_mode"] = "pilot"
+        else:
+            pilot_cfg = cfg.get("pilot", {})
+            rng = random.Random(int(pilot_cfg.get("seed", cfg.get("seed", 2026))))
+            rng.shuffle(available)
+            selected = available[: int(pilot_cfg.get("max_sequences", 62))]
+            if len(selected) < 2:
+                raise ValueError(f"pilot mode requires at least 2 completed NODEO trajectories, found {len(selected)}")
+            calibration_count = max(1, round(len(selected) * float(pilot_cfg.get("calibration_fraction", 0.15))))
+            val_count = max(1, round(len(selected) * float(pilot_cfg.get("val_fraction", 0.15))))
+            if calibration_count + val_count >= len(selected):
+                raise ValueError("pilot validation and calibration splits leave no training sequences")
+            calibration_indices = sorted(selected[:calibration_count])
+            val_indices = sorted(selected[calibration_count : calibration_count + val_count])
+            train_indices = sorted(selected[calibration_count + val_count :])
+            cfg["run_mode"] = "pilot"
+            cfg["pilot_selection"] = {
+                "available_trajectories": len(available),
+                "selected_sequences": len(selected),
+                "train_sequences": len(train_indices),
+                "val_sequences": len(val_indices),
+                "calibration_sequences": len(calibration_indices),
+                "train_indices": train_indices,
+                "val_indices": val_indices,
+                "calibration_indices": calibration_indices,
+                "train_sources": [dataset.refs[index].source_path for index in train_indices],
+                "val_sources": [dataset.refs[index].source_path for index in val_indices],
+                "calibration_sources": [dataset.refs[index].source_path for index in calibration_indices],
+            }
+    else:
+        train_indices = [index for index in (train_indices or []) if index in available]
+        val_indices = [index for index in (val_indices or []) if index in available]
+        cfg["run_mode"] = "full"
+    if not train_indices or not val_indices:
+        raise ValueError(
+            f"mode={args.mode} has train={len(train_indices or [])}, val={len(val_indices or [])} sequences "
+            "with completed NODEO trajectories"
+        )
+    split_report = {"mode": args.mode, "train_sequences": len(train_indices), "val_sequences": len(val_indices)}
+    if args.mode == "pilot":
+        split_report["calibration_sequences"] = len(calibration_indices)
+    print(json.dumps(split_report, indent=2))
     latent_dim = int(dataset[0]["z"].shape[-1])
     sde_rnn = build_sde_rnn(cfg, latent_dim=latent_dim, device=device)
+    if checkpoint_payload is not None:
+        sde_rnn.load_state_dict(checkpoint_payload["model_state"], strict=True)
 
     train_loader = make_loader(
         dataset,
@@ -261,9 +369,35 @@ def main() -> None:
         lr=float(optim_cfg["lr"]),
         weight_decay=float(optim_cfg.get("weight_decay", 0.0)),
     )
-    run_dir = resolve_path(cfg["output"]["run_dir"], root)
+    configured_run_dir = str(cfg["output"]["run_dir"])
+    run_dir = resolve_path(
+        f"{configured_run_dir}_pilot62" if args.mode == "pilot" else configured_run_dir,
+        root,
+    )
     run_dir.mkdir(parents=True, exist_ok=True)
+    if args.mode == "pilot":
+        (run_dir / "pilot_split.json").write_text(
+            json.dumps(cfg["pilot_selection"], indent=2),
+            encoding="utf-8",
+        )
     metrics_path = run_dir / "metrics.jsonl"
+    if args.eval_only:
+        if not args.checkpoint:
+            parser.error("--eval-only requires --checkpoint")
+        val_metrics = run_epoch(
+            sde_rnn=sde_rnn,
+            trajectory_store=trajectory_store,
+            loader=val_loader,
+            optimizer=None,
+            device=device,
+            loss_cfg=cfg["loss"],
+            image_shape=image_shape,
+            grad_clip=None,
+        )
+        evaluation = {"mode": args.mode, "checkpoint": args.checkpoint, "val": val_metrics}
+        (run_dir / "evaluation.json").write_text(json.dumps(evaluation, indent=2), encoding="utf-8")
+        print(json.dumps(evaluation, indent=2))
+        return
     best_val = float("inf")
     patience = int(optim_cfg.get("early_stopping_patience", 0))
     min_delta = float(optim_cfg.get("early_stopping_min_delta", 0.0))

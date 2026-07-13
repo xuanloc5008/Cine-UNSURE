@@ -98,8 +98,22 @@ class ResidualDeformationDecoder(nn.Module):
         field = torch.tanh(self.net(torch.cat([coords, h_repeat, t_repeat], dim=1))) * self.residual_scale
         return field.T.reshape(3, *self.image_shape)
 
-    def covariance_factor(self, h: Tensor, p: Tensor, t: Tensor, *, jitter: float = 1.0e-6) -> Tensor:
-        """Return exact low-rank factor L_phi such that R_phi = L_phi L_phi^T."""
+    def covariance_factor(
+        self,
+        h: Tensor,
+        p: Tensor,
+        t: Tensor,
+        *,
+        jitter: float = 1.0e-6,
+        covariance_grad: bool = False,
+    ) -> Tensor:
+        """Return L_phi with R_phi = L_phi L_phi^T.
+
+        The decoder Jacobian is evaluated at the current mean and treated as the
+        local linearization. With covariance_grad=True, gradients still flow
+        through chol(P), allowing the SDE diffusion covariance to learn from a
+        proper scoring loss without requiring second derivatives of the decoder.
+        """
 
         h = h.detach().requires_grad_(True)
         columns: list[Tensor] = []
@@ -113,7 +127,11 @@ class ResidualDeformationDecoder(nn.Module):
             columns.append(jvp.detach())
         jac = torch.stack(columns, dim=1)
         eye = torch.eye(p.shape[0], device=p.device, dtype=p.dtype)
-        chol = torch.linalg.cholesky(p.detach() + float(jitter) * eye)
+        covariance = p if covariance_grad else p.detach()
+        covariance = 0.5 * (covariance + covariance.T)
+        minimum_eigenvalue = torch.linalg.eigvalsh(covariance.detach()).min()
+        diagonal_shift = (-minimum_eigenvalue + float(jitter)).clamp_min(float(jitter))
+        chol = torch.linalg.cholesky(covariance + diagonal_shift * eye)
         return jac @ chol
 
 
@@ -187,7 +205,7 @@ class NeuralSDERNNUncertainty(nn.Module):
             t = t0 + dt * float(step)
             f = self.drift(h, t)
             f_h = self._drift_jacobian(h, t).to(p)
-            g = self.diffusion(h.detach(), t.detach()).detach().to(p)
+            g = self.diffusion(h.detach(), t.detach()).to(p)
             dp = p @ f_h.T + f_h @ p + g @ eye @ g.T
             p_next = p + dt.detach() * dp
             p = 0.5 * (p_next + p_next.T)
