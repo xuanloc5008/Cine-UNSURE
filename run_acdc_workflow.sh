@@ -115,6 +115,7 @@ case "${STAGE}" in
   sde-posthoc-val) CONFIG="${SDE_POSTHOC_CONFIG}" ./run_sde_sequence_posthoc_workflow.sh val ;;
   sde-posthoc-test) CONFIG="${SDE_POSTHOC_CONFIG}" ./run_sde_sequence_posthoc_workflow.sh test ;;
   sde-posthoc-train-val) CONFIG="${SDE_POSTHOC_CONFIG}" ./run_sde_sequence_posthoc_workflow.sh train-val ;;
+  patient) ./run_patient_sequence_workflow.sh ;;
   clinical) DEVICE="${DEVICE}" ./run_acdc_clinical_evaluation.sh ;;
   pathology) DEVICE="${DEVICE}" ./run_acdc_pathology.sh all ;;
   full)
@@ -134,7 +135,7 @@ case "${STAGE}" in
     DEVICE="${DEVICE}" ./run_acdc_pathology.sh all
     ;;
   *)
-    echo "Usage: $0 {prepare|train-score|evaluate-score|infer-train|infer-val|infer-test|infer-all|package|manifest|nodeo-train|nodeo-val|nodeo-test|nodeo-all|nodeo-euler-train|nodeo-euler-val|nodeo-euler-test|nodeo-euler-all|nodeo-euler30-train|nodeo-euler30-val|nodeo-euler30-test|nodeo-euler30-all|index|train-sde|sde-posthoc-train|sde-posthoc-val|sde-posthoc-test|sde-posthoc-train-val|clinical|pathology|full}"
+    echo "Usage: $0 {prepare|train-score|evaluate-score|infer-train|infer-val|infer-test|infer-all|package|manifest|nodeo-train|nodeo-val|nodeo-test|nodeo-all|nodeo-euler-train|nodeo-euler-val|nodeo-euler-test|nodeo-euler-all|nodeo-euler30-train|nodeo-euler30-val|nodeo-euler30-test|nodeo-euler30-all|index|train-sde|sde-posthoc-train|sde-posthoc-val|sde-posthoc-test|sde-posthoc-train-val|patient|clinical|pathology|full}"
     exit 2
     ;;
 esac

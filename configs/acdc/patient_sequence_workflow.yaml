@@ -1,0 +1,35 @@
+option: 2
+device: auto
+
+selection:
+  split: test
+  patient: patient101
+
+data:
+  manifest: processed/acdc/nodeo_roi_splits.jsonl
+
+nodeo:
+  # Option 1 runs NODEO for the selected patient using this configuration.
+  run_config: configs/acdc/train_nodeo_dir_roi_euler.yaml
+  # Option 2 reuses the existing Euler test outputs requested for this workflow.
+  precomputed_dir: runs/acdc/nodeo_dir_euler/test
+
+observation:
+  # false reruns score C-UNSURE and CineMA for every invocation.
+  resume: false
+  configs:
+    train: configs/acdc/infer_cinema_score_train.yaml
+    val: configs/acdc/infer_cinema_score_val.yaml
+    test: configs/acdc/infer_cinema_score_test.yaml
+  compression: lzf
+
+sde:
+  config: configs/acdc/run_sde_sequence_posthoc.yaml
+
+clinical:
+  lv_label: 3
+  coverage: 0.95
+  roi_mask_margin: [0, 16, 16]
+
+output:
+  run_dir: runs/acdc/patient_sequence_workflow
