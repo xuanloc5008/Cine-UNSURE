@@ -7,14 +7,16 @@ selection:
 
 data:
   manifest: processed/acdc/nodeo_roi_splits.jsonl
+  manifest_config: configs/acdc/nodeo_roi_splits.yaml
 
 nodeo:
   # Option 1 runs NODEO for the selected patient using this configuration.
-  run_config: configs/acdc/train_nodeo_dir_roi_euler.yaml
+  run_config: configs/acdc/train_nodeo_dir_roi_dopri5.yaml
   # Option 2 reuses the existing Euler test outputs requested for this workflow.
   precomputed_dir: runs/acdc/nodeo_dir_euler/test
 
 observation:
+  score_checkpoint: runs/acdc/cunsure_score/best.pt
   # false reruns score C-UNSURE and CineMA for every invocation.
   resume: false
   configs:

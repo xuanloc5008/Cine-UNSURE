@@ -47,7 +47,9 @@ def build_model(cfg: dict, device: torch.device) -> NODEODIRModel:
     return NODEODIRModel(
         image_shape=as_tuple_int(model_cfg["image_shape"], name="image_shape"),
         solver=str(model_cfg["solver"]),
-        step_size=float(model_cfg["step_size"]),
+        step_size=float(model_cfg.get("step_size", 0.05)),
+        rtol=float(model_cfg.get("rtol", 1.0e-6)),
+        atol=float(model_cfg.get("atol", 1.0e-8)),
         encoder_channels=int(model_cfg["encoder_channels"]),
         encoder_depth=int(model_cfg["encoder_depth"]),
         output_downsamples=int(model_cfg["output_downsamples"]),

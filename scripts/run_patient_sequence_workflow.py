@@ -42,9 +42,76 @@ def read_jsonl(path: Path) -> list[dict[str, object]]:
         return [json.loads(line) for line in handle if line.strip()]
 
 
+def ensure_manifest(*, configured_path: Path, cfg: dict[str, object], root: Path) -> Path:
+    if configured_path.exists():
+        return configured_path
+    manifest_config = cfg["data"].get("manifest_config")  # type: ignore[union-attr]
+    if not manifest_config:
+        raise FileNotFoundError(
+            f"sequence manifest does not exist: {configured_path}; "
+            "set data.manifest_config so it can be generated automatically"
+        )
+    config_path = resolve_path(manifest_config, root)
+    if config_path is None or not config_path.exists():
+        raise FileNotFoundError(f"manifest build config does not exist: {config_path}")
+    print(
+        json.dumps(
+            {
+                "manifest_missing": str(configured_path),
+                "action": "build_nodeo_roi_splits",
+                "config": str(config_path),
+            },
+            indent=2,
+        ),
+        flush=True,
+    )
+    run(
+        [
+            sys.executable,
+            "scripts/build_nodeo_roi_splits.py",
+            "--config",
+            relative_or_absolute(config_path, root),
+        ],
+        root=root,
+    )
+    if not configured_path.exists():
+        raise FileNotFoundError(
+            f"manifest builder completed but did not create expected file: {configured_path}"
+        )
+    return configured_path
+
+
 def write_yaml(path: Path, value: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(value, sort_keys=False), encoding="utf-8")
+
+
+def validate_score_checkpoint(path_text: str, *, root: Path) -> Path:
+    path = Path(path_text)
+    if path.is_absolute():
+        try:
+            relative = path.resolve().relative_to(root.resolve())
+        except ValueError as error:
+            raise ValueError(
+                "score checkpoint must be inside the project because absolute paths are disabled "
+                "by the inference configuration"
+            ) from error
+        path = root / relative
+    else:
+        path = root / path
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Score C-UNSURE checkpoint not found: {path}\n"
+            "Train it with './run_acdc_workflow.sh train-score', copy an existing "
+            "unsure_ardae_score checkpoint there, or pass --score-checkpoint."
+        )
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    if checkpoint.get("method") != "unsure_ardae_score":
+        raise ValueError(
+            f"invalid Score C-UNSURE checkpoint method at {path}: "
+            f"{checkpoint.get('method')!r}; expected 'unsure_ardae_score'"
+        )
+    return path
 
 
 def select_manifest_row(
@@ -169,12 +236,14 @@ def infer_observations(
     split: str,
     manifest_row: dict[str, object],
     work_dir: Path,
+    score_checkpoint: Path,
 ) -> Path:
     base_config = cfg["observation"]["configs"][split]  # type: ignore[index]
     base_path = resolve_path(base_config, root)
     assert base_path is not None
     infer_cfg = load_yaml(base_path)
     infer_cfg["device"] = cfg.get("device", infer_cfg.get("device", "auto"))
+    infer_cfg["score"]["checkpoint"] = relative_or_absolute(score_checkpoint, root)
     h5_path = resolve_path(str(manifest_row["h5_path"]), root)
     assert h5_path is not None
     indices = [int(value) for value in manifest_row["indices"]]  # type: ignore[union-attr]
@@ -353,6 +422,7 @@ def main() -> None:
     parser.add_argument("--option", type=int, choices=(1, 2))
     parser.add_argument("--patient")
     parser.add_argument("--split", choices=("train", "val", "test"))
+    parser.add_argument("--score-checkpoint")
     parser.add_argument("--overwrite-nodeo", action="store_true")
     args = parser.parse_args()
 
@@ -364,9 +434,15 @@ def main() -> None:
     split = str(args.split or selection_cfg.get("split", "test"))
     manifest = resolve_path(cfg["data"]["manifest"], root)
     assert manifest is not None
+    manifest = ensure_manifest(configured_path=manifest, cfg=cfg, root=root)
     manifest_row, split_index = select_manifest_row(
         manifest, split=split, patient=patient
     )
+    configured_checkpoint = str(
+        args.score_checkpoint
+        or cfg["observation"].get("score_checkpoint", "runs/acdc/cunsure_score/best.pt")
+    )
+    score_checkpoint = validate_score_checkpoint(configured_checkpoint, root=root)
     patient_name = Path(str(manifest_row["source_path"])).parent.name
     work_root = resolve_path(cfg["output"]["run_dir"], root)
     assert work_root is not None
@@ -405,6 +481,7 @@ def main() -> None:
         split=split,
         manifest_row=manifest_row,
         work_dir=work_dir,
+        score_checkpoint=score_checkpoint,
     )
     sde_output = fit_sde(
         root=root,

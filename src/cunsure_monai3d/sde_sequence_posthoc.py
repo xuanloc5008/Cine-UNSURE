@@ -67,6 +67,36 @@ def stabilize_covariance(covariance: Tensor, *, eigenvalue_floor: float) -> Tens
     return (eigenvectors * eigenvalues.clamp_min(float(eigenvalue_floor))) @ eigenvectors.T
 
 
+def covariance_cholesky(covariance: Tensor, *, eigenvalue_floor: float) -> tuple[Tensor, Tensor]:
+    """Return a numerically PSD covariance and its Cholesky factor.
+
+    Covariance propagation runs in the model dtype, normally float32. A matrix
+    reconstructed from a float32 eigendecomposition can therefore acquire tiny
+    negative eigenvalues even after eigenvalue clipping. Perform the final PSD
+    projection and factorization in float64, then reconstruct the covariance
+    from the returned factor so both saved quantities remain consistent.
+    """
+    original_device = covariance.device
+    original_dtype = covariance.dtype
+    work_device = torch.device("cpu") if covariance.device.type == "mps" else covariance.device
+    work = covariance.to(device=work_device, dtype=torch.float64)
+    work = 0.5 * (work + work.T)
+    eigenvalues, eigenvectors = torch.linalg.eigh(work)
+    scale = eigenvalues.abs().max().clamp_min(1.0)
+    numerical_floor = torch.finfo(work.dtype).eps * scale * 10.0
+    floor = torch.maximum(
+        numerical_floor,
+        torch.as_tensor(float(eigenvalue_floor), device=work.device, dtype=work.dtype),
+    )
+    work = (eigenvectors * eigenvalues.clamp_min(floor)) @ eigenvectors.T
+    work = 0.5 * (work + work.T)
+    chol = torch.linalg.cholesky(work)
+    chol = chol.to(device=original_device, dtype=original_dtype)
+    stabilized = chol @ chol.T
+    stabilized = 0.5 * (stabilized + stabilized.T)
+    return stabilized, chol
+
+
 class PerSequencePostHocSDERNN(nn.Module):
     """Per-sequence mean SDE-CVGRU with analytical post-hoc covariance.
 
@@ -241,10 +271,9 @@ class PerSequencePostHocSDERNN(nn.Module):
             covariance = stabilize_covariance(covariance, eigenvalue_floor=covariance_floor)
 
             decoder_jacobian = self._decoder_jacobian(hidden).to(covariance)
-            chol = torch.linalg.cholesky(
-                covariance
-                + torch.eye(self.hidden_dim, device=covariance.device, dtype=covariance.dtype)
-                * float(covariance_floor)
+            covariance, chol = covariance_cholesky(
+                covariance,
+                eigenvalue_floor=covariance_floor,
             )
             means.append(hidden)
             covariances.append(covariance)

@@ -272,17 +272,43 @@ def fit_sequence(
 
     predicted_motion_code = analytical.motion_code * motion_scale
     motion_factor = analytical.motion_covariance_factor * motion_scale[None, :, None]
-    displacement_flat = motion_mean[None] + predicted_motion_code @ motion_basis.T
+    sde_displacement_flat = motion_mean[None] + predicted_motion_code @ motion_basis.T
     # The deformation is defined relative to I0, so frame zero is deterministically identity.
-    displacement_flat = displacement_flat - displacement_flat[0:1]
+    sde_displacement_flat = sde_displacement_flat - sde_displacement_flat[0:1]
     motion_factor = motion_factor.clone()
     motion_factor[0].zero_()
-    mean_displacement = displacement_flat.reshape_as(nodeo_displacement)
+    sde_reconstructed_displacement = sde_displacement_flat.reshape_as(nodeo_displacement)
     identity = phi_bar - nodeo_displacement
-    mean_deformation = identity + mean_displacement
+    sde_reconstructed_deformation = identity + sde_reconstructed_displacement
+
+    # NODEO defines the mean deformation trajectory. The fitted SDE-CVGRU is
+    # retained only for analytical Jacobian/covariance propagation; replacing
+    # the NODEO mean with its low-rank point reconstruction can introduce a
+    # systematic motion-amplitude and phase bias.
+    mean_displacement = nodeo_displacement
+    mean_deformation = phi_bar
     transformer = SpatialTransformer3D(tuple(int(v) for v in images.shape[-3:])).to(device)
     with torch.no_grad():
         predicted_frames = transformer(images[0:1].expand(length, -1, -1, -1, -1), mean_displacement)
+        sde_reconstructed_frames = transformer(
+            images[0:1].expand(length, -1, -1, -1, -1),
+            sde_reconstructed_displacement,
+        )
+
+        target_motion_code = motion_code * motion_scale
+        pca_displacement_flat = motion_mean[None] + target_motion_code @ motion_basis.T
+        pca_displacement_flat = pca_displacement_flat - pca_displacement_flat[0:1]
+        nodeo_flat = nodeo_displacement.reshape(length, -1)
+        displacement_denominator = nodeo_flat[1:].norm().clamp_min(1.0e-8)
+        pca_reconstruction_mse = torch.nn.functional.mse_loss(pca_displacement_flat, nodeo_flat)
+        sde_reconstruction_mse = torch.nn.functional.mse_loss(sde_displacement_flat, nodeo_flat)
+        sde_relative_displacement_error = (
+            (sde_displacement_flat[1:] - nodeo_flat[1:]).norm() / displacement_denominator
+        )
+        nodeo_frame_mse = torch.nn.functional.mse_loss(predicted_frames, images)
+        sde_frame_mse = torch.nn.functional.mse_loss(sde_reconstructed_frames, images)
+        nodeo_peak_index = int(nodeo_flat.square().mean(dim=1).argmax())
+        sde_peak_index = int(sde_displacement_flat.square().mean(dim=1).argmax())
 
     voxel_variance: list[Tensor] = []
     for frame_factor in motion_factor:
@@ -290,7 +316,8 @@ def fit_sequence(
         voxel_variance.append(full_factor.square().sum(dim=1).reshape_as(nodeo_displacement[0]))
 
     payload: dict[str, object] = {
-        "method": "per_sequence_mse_posthoc_analytical_sde_cvgru",
+        "method": "nodeo_mean_posthoc_analytical_sde_cvgru",
+        "mean_source": "nodeo_locked",
         "dataset": sample["dataset"],
         "source_path": sample["source_path"],
         "raw_time_indices": sample["raw_time_indices"],
@@ -302,6 +329,8 @@ def fit_sequence(
         "mean_displacement": mean_displacement.detach().cpu().half(),
         "total_displacement": mean_displacement.detach().cpu().half(),
         "predicted_frames": predicted_frames.detach().cpu().half(),
+        "sde_reconstructed_deformation": sde_reconstructed_deformation.detach().cpu().half(),
+        "sde_reconstructed_displacement": sde_reconstructed_displacement.detach().cpu().half(),
         "deformation_variance_diag": torch.stack(voxel_variance).detach().cpu().float(),
         "motion_basis": motion_basis.detach().cpu().float(),
         "motion_covariance_factor": motion_factor.detach().cpu().float(),
@@ -321,7 +350,10 @@ def fit_sequence(
             "L_phi[k] = motion_basis @ motion_covariance_factor[k]; "
             "R_phi[k] = L_phi[k] @ L_phi[k].T"
         ),
-        "uncertainty_training": "post-hoc only; model weights optimized with masked-frame MSE",
+        "uncertainty_training": (
+            "post-hoc only; SDE-CVGRU weights optimized with masked-frame MSE, "
+            "while the final mean trajectory remains locked to NODEO"
+        ),
     }
     metrics: dict[str, float | int | str] = {
         "best_iteration": best_iteration,
@@ -331,6 +363,15 @@ def fit_sequence(
         "frames": length,
         "motion_rank": int(motion_basis.shape[1]),
         "observation_rank": int(observation_basis.shape[1]),
+        "mean_source": "nodeo_locked",
+        "pca_reconstruction_mse": float(pca_reconstruction_mse),
+        "sde_reconstruction_mse": float(sde_reconstruction_mse),
+        "sde_relative_displacement_error": float(sde_relative_displacement_error),
+        "nodeo_frame_mse": float(nodeo_frame_mse),
+        "sde_reconstructed_frame_mse": float(sde_frame_mse),
+        "nodeo_peak_motion_index": nodeo_peak_index,
+        "sde_peak_motion_index": sde_peak_index,
+        "peak_motion_index_error": abs(sde_peak_index - nodeo_peak_index),
         "mean_deformation_variance": float(torch.stack(voxel_variance).mean()),
     }
     return payload, metrics

@@ -4,6 +4,10 @@ The workflow selects exactly one cine patient from
 `processed/acdc/nodeo_roi_splits.jsonl` and executes all remaining stages in a
 single command.
 
+If this manifest is absent on a new server, the entry point automatically runs
+`scripts/build_nodeo_roi_splits.py` with
+`configs/acdc/nodeo_roi_splits.yaml` before selecting the patient.
+
 ## Shared stages
 
 Both options perform the following operations for the selected patient:
@@ -22,6 +26,17 @@ Both options perform the following operations for the selected patient:
 By default `observation.resume: false`, so C-UNSURE and CineMA are executed
 again on every invocation. Set it to `true` only when intentionally resuming a
 partially completed patient inference.
+
+The Score C-UNSURE checkpoint defaults to
+`runs/acdc/cunsure_score/best.pt`. It can be overridden without editing YAML:
+
+```bash
+SCORE_CHECKPOINT=runs/my_score_run/best.pt \
+PATIENT=patient101 SPLIT=test ./run_patient_sequence_workflow.sh
+```
+
+The entry point validates that this file exists and contains
+`method: unsure_ardae_score` before starting NODEO.
 
 ## Option 1
 

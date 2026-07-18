@@ -132,14 +132,22 @@ class NODEODIRModel(nn.Module):
         image_shape: tuple[int, int, int],
         solver: str = "rk4",
         step_size: float = 0.05,
+        rtol: float = 1.0e-6,
+        atol: float = 1.0e-8,
         **velocity_kwargs: object,
     ) -> None:
         super().__init__()
         self.image_shape = tuple(int(v) for v in image_shape)
         self.solver = str(solver).lower()
-        if self.solver not in {"euler", "rk4"}:
-            raise ValueError("solver must be 'euler' or 'rk4'")
+        if self.solver not in {"euler", "rk4", "dopri5"}:
+            raise ValueError("solver must be 'euler', 'rk4', or 'dopri5'")
         self.step_size = float(step_size)
+        self.rtol = float(rtol)
+        self.atol = float(atol)
+        if self.step_size <= 0.0:
+            raise ValueError("step_size must be positive")
+        if self.rtol <= 0.0 or self.atol <= 0.0:
+            raise ValueError("rtol and atol must be positive")
         self.velocity_net = NODEODIRVelocityNet(image_shape=self.image_shape, **velocity_kwargs)
         self.register_buffer("identity_normalized", self._identity_grid(self.image_shape), persistent=False)
 
@@ -171,14 +179,22 @@ class NODEODIRModel(nn.Module):
         if times.numel() == 1:
             phi_normalized = phi0[None]
         else:
+            # Fixed-step methods consume step_size. Dopri5 instead adapts its
+            # internal evaluations to rtol/atol, and every evaluation passes
+            # through velocity_net where the Gaussian K smoothing is applied.
+            options = {"step_size": self.step_size} if self.solver in {"euler", "rk4"} else None
             phi_normalized = odeint_adjoint(
                 self,
                 phi0,
                 times,
+                rtol=self.rtol,
+                atol=self.atol,
                 method=self.solver,
-                options={"step_size": self.step_size},
+                options=options,
+                adjoint_rtol=self.rtol,
+                adjoint_atol=self.atol,
                 adjoint_method=self.solver,
-                adjoint_options={"step_size": self.step_size},
+                adjoint_options=options,
             ).squeeze(1)
         phi_voxel = self._to_voxel(phi_normalized)
         identity_voxel = self._to_voxel(self.identity_normalized.to(times)).squeeze(0)
