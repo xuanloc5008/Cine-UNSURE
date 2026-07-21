@@ -25,3 +25,8 @@ optim:
   lr: 0.01
   weight_decay: 0.0
   log_every: 25
+
+selection:
+  max_fold_fraction: 0.0
+  min_jacobian_ratio_to_base: 0.90
+  max_jacobian_ratio_to_base: 1.10

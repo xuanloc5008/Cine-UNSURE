@@ -25,6 +25,65 @@ def canonical_source_key(path: str) -> str:
     return normalized.lstrip("/")
 
 
+def resolve_portable_source_path(
+    stored_path: str | Path,
+    *,
+    datasets_root: str | Path,
+    project_root: str | Path,
+) -> Path:
+    """Resolve source metadata produced on another machine.
+
+    Checkpoints may contain paths rooted at macOS volumes, Kaggle, or a remote
+    workspace. The dataset name and its relative suffix are stable across those
+    environments, so resolution is based on that portable portion.
+    """
+
+    direct = Path(stored_path).expanduser()
+    if direct.exists():
+        return direct.resolve()
+
+    root = Path(project_root)
+    configured_root = Path(datasets_root).expanduser()
+    if not configured_root.is_absolute():
+        configured_root = root / configured_root
+
+    normalized = str(stored_path).replace("\\", "/")
+    portable_candidates: list[Path] = []
+    if "/datasets/" in normalized:
+        portable_candidates.append(Path(normalized.split("/datasets/", 1)[1]))
+    elif normalized.startswith("datasets/"):
+        portable_candidates.append(Path(normalized[len("datasets/") :]))
+
+    for dataset in ("ACDC", "M&M1", "MnM2"):
+        marker = f"/{dataset}/"
+        if marker in normalized:
+            portable_candidates.append(
+                Path(dataset) / normalized.split(marker, 1)[1]
+            )
+        elif normalized.startswith(f"{dataset}/"):
+            portable_candidates.append(Path(normalized))
+
+    attempted: list[Path] = []
+    search_roots = [configured_root]
+    default_root = root / "datasets"
+    if default_root != configured_root:
+        search_roots.append(default_root)
+    for portable in portable_candidates:
+        for search_root in search_roots:
+            if portable.parts and search_root.name == portable.parts[0]:
+                candidate = search_root.joinpath(*portable.parts[1:])
+            else:
+                candidate = search_root / portable
+            attempted.append(candidate)
+            if candidate.exists():
+                return candidate.resolve()
+
+    attempted_text = ", ".join(str(path) for path in attempted) or "no portable dataset suffix found"
+    raise FileNotFoundError(
+        f"cannot remap source path {stored_path!s}; attempted: {attempted_text}"
+    )
+
+
 @dataclass(frozen=True)
 class NODEOSequenceRef:
     sequence_id: str

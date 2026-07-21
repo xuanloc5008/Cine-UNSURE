@@ -116,6 +116,30 @@ def compute_loss(
     image_loss = (
         forward_image_loss + backward_weight * backward_image_loss
     ) / (1.0 + backward_weight)
+    adjacent_weight = float(loss_cfg.get("lambda_adjacent", 0.0))
+    if adjacent_weight > 0.0 and images.shape[0] > 1:
+        # Ik -> I(k+1): return Ik to I0, then follow I0 to I(k+1).
+        adjacent_forward_flow = compose_displacements(
+            inverse_output.displacement_voxel[:-1],
+            output.displacement_voxel[1:],
+            transformer=transformer,
+        )
+        adjacent_backward_flow = compose_displacements(
+            inverse_output.displacement_voxel[1:],
+            output.displacement_voxel[:-1],
+            transformer=transformer,
+        )
+        adjacent_forward_warped = transformer(images[:-1], adjacent_forward_flow)
+        adjacent_backward_warped = transformer(images[1:], adjacent_backward_flow)
+        adjacent_forward_loss = similarity(images[1:], adjacent_forward_warped)
+        adjacent_backward_loss = similarity(images[:-1], adjacent_backward_warped)
+        adjacent_image_loss = 0.5 * (
+            adjacent_forward_loss + adjacent_backward_loss
+        )
+    else:
+        adjacent_forward_loss = image_loss.new_zeros(())
+        adjacent_backward_loss = image_loss.new_zeros(())
+        adjacent_image_loss = image_loss.new_zeros(())
     gradient_weight = float(loss_cfg.get("lambda_gradient", 0.0))
     if gradient_weight > 0.0:
         forward_gradient_loss = gradient_loss(target, warped)
@@ -127,6 +151,16 @@ def compute_loss(
         forward_gradient_loss = image_loss.new_zeros(())
         backward_gradient_loss = image_loss.new_zeros(())
         structural_loss = image_loss.new_zeros(())
+    adjacent_gradient_weight = float(
+        loss_cfg.get("lambda_adjacent_gradient", 0.0)
+    )
+    if adjacent_gradient_weight > 0.0 and adjacent_weight > 0.0:
+        adjacent_gradient_loss = 0.5 * (
+            gradient_loss(images[1:], adjacent_forward_warped)
+            + gradient_loss(images[:-1], adjacent_backward_warped)
+        )
+    else:
+        adjacent_gradient_loss = image_loss.new_zeros(())
     (
         jdet_loss,
         jdet_lower_loss,
@@ -158,7 +192,9 @@ def compute_loss(
     )
     total = (
         image_loss
+        + adjacent_weight * adjacent_image_loss
         + gradient_weight * structural_loss
+        + adjacent_gradient_weight * adjacent_gradient_loss
         + float(loss_cfg["lambda_j"]) * jdet_loss
         + float(loss_cfg["lambda_v"]) * magnitude_loss
         + float(loss_cfg["lambda_df"]) * deformation_smoothness
@@ -170,9 +206,13 @@ def compute_loss(
         "image": image_loss,
         "image_forward": forward_image_loss,
         "image_backward": backward_image_loss,
+        "image_adjacent": adjacent_image_loss,
+        "image_adjacent_forward": adjacent_forward_loss,
+        "image_adjacent_backward": adjacent_backward_loss,
         "gradient": structural_loss,
         "gradient_forward": forward_gradient_loss,
         "gradient_backward": backward_gradient_loss,
+        "gradient_adjacent": adjacent_gradient_loss,
         "jdet": jdet_loss,
         "jdet_lower": jdet_lower_loss,
         "jdet_upper": jdet_upper_loss,

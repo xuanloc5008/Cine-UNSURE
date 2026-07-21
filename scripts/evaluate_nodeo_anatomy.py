@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cardiac_nodeo_uq.config import project_root, resolve_path, select_device
 from cardiac_nodeo_uq.nodeo_ops import SpatialTransformer3D
-from cardiac_nodeo_uq.nodeo_roi_data import canonical_source_key
+from cardiac_nodeo_uq.nodeo_roi_data import resolve_portable_source_path
 from cardiac_nodeo_uq.preprocess import candidate_mask_paths, crop_or_pad_around_bbox, load_mask_bbox
 
 
@@ -123,10 +123,11 @@ def main() -> None:
 
     root = project_root()
     payload = torch.load(resolve_path(args.input, root), map_location="cpu", weights_only=False)
-    source_key = canonical_source_key(str(payload["source_path"]))
-    if not source_key.startswith("datasets/"):
-        raise ValueError(f"cannot remap source path: {payload['source_path']}")
-    source_path = resolve_path(Path(args.datasets_root) / source_key[len("datasets/") :], root)
+    source_path = resolve_portable_source_path(
+        str(payload["source_path"]),
+        datasets_root=args.datasets_root,
+        project_root=root,
+    )
     masks_by_time = load_masks_by_time(source_path)
     raw_times = [int(v) for v in payload["raw_time_indices"]]
     reference_time = raw_times[0]

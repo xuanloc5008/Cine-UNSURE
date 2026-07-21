@@ -41,6 +41,10 @@ nodeo:
       run_config: configs/acdc/experiments/05_rk4_adam_lbfgs.yaml
       precomputed_dir: runs/acdc/experiments/05_rk4_adam_lbfgs
       sde_output_dir: runs/acdc/sde_sequence_posthoc_rk4_lbfgs
+    rk4_temporal:
+      run_config: configs/acdc/experiments/07_rk4_temporal_adjacent.yaml
+      precomputed_dir: runs/acdc/experiments/07_rk4_temporal_adjacent
+      sde_output_dir: runs/acdc/sde_sequence_posthoc_rk4_temporal
 
 sde:
   config: configs/acdc/run_sde_sequence_posthoc.yaml

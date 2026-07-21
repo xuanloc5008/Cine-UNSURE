@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from cardiac_nodeo_uq.label_propagation import propagate_label_probabilities
 from cardiac_nodeo_uq.nodeo_ops import SpatialTransformer3D
+from cardiac_nodeo_uq.nodeo_roi_data import resolve_portable_source_path
 from cardiac_nodeo_uq.preprocess import crop_or_pad_around_bbox, load_mask_bbox
 from scripts.evaluate_nodeo_anatomy import load_masks_by_time
 
@@ -27,17 +28,11 @@ COLORS = {1: "#ff3b30", 2: "#34c759", 3: "#00c7ff"}
 
 
 def resolve_source(stored_source: str, datasets_root: Path) -> Path:
-    source = Path(stored_source)
-    if source.exists():
-        return source
-    normalized = source.as_posix()
-    marker = "/ACDC/"
-    if marker not in normalized:
-        raise FileNotFoundError(f"cannot remap ACDC source: {stored_source}")
-    candidate = datasets_root / "ACDC" / normalized.split(marker, 1)[1]
-    if not candidate.exists():
-        raise FileNotFoundError(candidate)
-    return candidate
+    return resolve_portable_source_path(
+        stored_source,
+        datasets_root=datasets_root,
+        project_root=ROOT,
+    )
 
 
 def add_contours(axis: object, mask: np.ndarray) -> None:

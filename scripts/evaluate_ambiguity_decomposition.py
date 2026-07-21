@@ -18,24 +18,17 @@ sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 
 from cardiac_nodeo_uq.config import project_root, resolve_path, select_device
 from cardiac_nodeo_uq.nodeo_ops import SpatialTransformer3D
+from cardiac_nodeo_uq.nodeo_roi_data import resolve_portable_source_path
 from cardiac_nodeo_uq.preprocess import crop_or_pad_around_bbox, load_mask_bbox
 from scripts.evaluate_nodeo_anatomy import LABELS, label_metrics, load_masks_by_time
 
 
 def resolve_source(stored: str, datasets_root: Path, root: Path) -> Path:
-    direct = Path(stored)
-    if direct.exists():
-        return direct
-    normalized = stored.replace("\\", "/")
-    for dataset in ("ACDC", "M&M1", "MnM2"):
-        marker = f"/{dataset}/"
-        if marker in normalized:
-            candidate = datasets_root / dataset / normalized.split(marker, 1)[1]
-            if not candidate.is_absolute():
-                candidate = root / candidate
-            if candidate.exists():
-                return candidate
-    raise FileNotFoundError(f"cannot remap source path: {stored}")
+    return resolve_portable_source_path(
+        stored,
+        datasets_root=datasets_root,
+        project_root=root,
+    )
 
 
 def binary_auc(labels: np.ndarray, scores: np.ndarray) -> float | None:

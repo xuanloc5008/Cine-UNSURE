@@ -136,6 +136,31 @@ def main() -> None:
         device=device,
         dtype=images.dtype,
     ).expand(frames - 1, -1, -1, -1, -1)
+    with torch.no_grad():
+        (
+            _,
+            _,
+            _,
+            base_fold,
+            _,
+            base_jac_min,
+            base_jac_max,
+        ) = nodeo_jacobian_metrics(
+            identity + base_displacement[1:],
+            minimum=float(loss_cfg["minimum_jacobian"]),
+            maximum=float(loss_cfg["maximum_jacobian"]),
+        )
+    selection_cfg = cfg.get("selection", {})
+    maximum_fold = max(
+        float(selection_cfg.get("max_fold_fraction", 0.0)),
+        float(base_fold),
+    )
+    minimum_jacobian = float(base_jac_min) * float(
+        selection_cfg.get("min_jacobian_ratio_to_base", 0.90)
+    )
+    maximum_jacobian = float(base_jac_max) * float(
+        selection_cfg.get("max_jacobian_ratio_to_base", 1.10)
+    )
     best_loss = float("inf")
     best_iteration = 0
     best_velocity: Tensor | None = None
@@ -182,7 +207,6 @@ def main() -> None:
         )
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
-        optimizer.step()
 
         metrics = {
             "loss": float(loss.detach()),
@@ -197,16 +221,26 @@ def main() -> None:
             "residual_temporal": float(residual_temporal.detach()),
             "cycle": float(cycle.detach()),
         }
-        if metrics["loss"] < best_loss:
+        topology_valid = (
+            metrics["fold_fraction"] <= maximum_fold + 1.0e-8
+            and metrics["jacobian_min"] >= minimum_jacobian
+            and metrics["jacobian_max"] <= maximum_jacobian
+        )
+        metrics["topology_valid"] = float(topology_valid)
+        if topology_valid and metrics["loss"] < best_loss:
             best_loss = metrics["loss"]
             best_iteration = iteration
             best_velocity = residual.velocity.detach().cpu().clone()
             best_metrics = metrics
+        optimizer.step()
         if iteration == 1 or iteration % int(cfg["optim"].get("log_every", 25)) == 0:
             print(json.dumps({"iteration": iteration, **metrics}))
 
     if best_velocity is None or best_metrics is None:
-        raise RuntimeError("residual refinement produced no state")
+        raise RuntimeError(
+            "residual refinement produced no topology-valid state; "
+            "keep the original NODEO result"
+        )
     residual.velocity.data.copy_(best_velocity.to(device))
     residual.eval()
     with torch.no_grad():
