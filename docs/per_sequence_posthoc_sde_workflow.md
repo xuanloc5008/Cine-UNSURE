@@ -5,19 +5,21 @@ NODEO output: cropped images, time indices, and mean deformation trajectory.
 
 ## Ambiguity input
 
-For every frame, the runner computes:
+For every frame, the runner first corrects local affine intensity variation and
+then computes separate evidence families:
 
 ```text
-r[k] = GaussianSmooth((I[k] - warp(I[0], phi_NODEO[k]))^2)
-s = quantile({r[k, x] over the complete sequence}, q)
-U_ambiguity[k] = clip(r[k] / max(s, epsilon), 0, c)
+U_image = combine(intensity change, non-edge artifact residual)
+U_deformation = combine(local structure, gradient orientation,
+                        inverse consistency, Jacobian violation)
 ```
 
 Frame zero is set to zero ambiguity. The shared sequence scale preserves
 between-frame amplitude, unlike independent per-frame max normalization.
-`U_ambiguity` is used directly as an isotropic voxel covariance proxy, repeated
+Only `U_deformation` is used as an isotropic voxel covariance proxy, repeated
 over the three displacement channels and projected into the NODEO motion
-basis. No external observation file or learned ambiguity conversion is used.
+basis. `U_image` is saved for diagnostics but does not enter SDE deformation
+covariance. No external observation file or learned ambiguity conversion is used.
 
 ## Mean fitting
 

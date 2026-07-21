@@ -19,6 +19,7 @@ from cardiac_nodeo_uq.nodeo_dir import NODEODIRModel
 from cardiac_nodeo_uq.nodeo_ops import (
     LocalNCC3D,
     SpatialTransformer3D,
+    compose_displacements,
     nodeo_jacobian_metrics,
     smoothness_loss,
     velocity_magnitude_loss,
@@ -70,12 +71,26 @@ def compute_loss(
     ncc: LocalNCC3D,
     transformer: SpatialTransformer3D,
     loss_cfg: dict,
-) -> tuple[torch.Tensor, dict[str, torch.Tensor], object, torch.Tensor]:
+) -> tuple[
+    torch.Tensor,
+    dict[str, torch.Tensor],
+    object,
+    torch.Tensor,
+    object,
+    torch.Tensor,
+]:
     output = model.integrate_sequence(times)
+    inverse_output = model.integrate_inverse_sequence(times)
     target = images[1:]
     reference = images[0:1].expand(target.shape[0], -1, -1, -1, -1)
     warped = transformer(reference, output.displacement_voxel[1:])
-    image_loss = ncc(target, warped)
+    backward_warped = transformer(images[1:], inverse_output.displacement_voxel[1:])
+    forward_image_loss = ncc(target, warped)
+    backward_image_loss = ncc(reference, backward_warped)
+    backward_weight = float(loss_cfg.get("lambda_backward", 1.0))
+    image_loss = (
+        forward_image_loss + backward_weight * backward_image_loss
+    ) / (1.0 + backward_weight)
     (
         jdet_loss,
         jdet_lower_loss,
@@ -92,16 +107,32 @@ def compute_loss(
     magnitude_loss = velocity_magnitude_loss(output.velocity_normalized[1:, None])
     deformation_smoothness = smoothness_loss(output.displacement_voxel[1:])
     cycle_loss = output.displacement_voxel[-1].square().mean()
+    reference_cycle = compose_displacements(
+        output.displacement_voxel[1:],
+        inverse_output.displacement_voxel[1:],
+        transformer=transformer,
+    )
+    target_cycle = compose_displacements(
+        inverse_output.displacement_voxel[1:],
+        output.displacement_voxel[1:],
+        transformer=transformer,
+    )
+    inverse_consistency_loss = 0.5 * (
+        reference_cycle.square().mean() + target_cycle.square().mean()
+    )
     total = (
         image_loss
         + float(loss_cfg["lambda_j"]) * jdet_loss
         + float(loss_cfg["lambda_v"]) * magnitude_loss
         + float(loss_cfg["lambda_df"]) * deformation_smoothness
         + float(loss_cfg.get("lambda_cycle", 0.0)) * cycle_loss
+        + float(loss_cfg.get("lambda_inverse", 0.0)) * inverse_consistency_loss
     )
     terms = {
         "loss": total,
         "image": image_loss,
+        "image_forward": forward_image_loss,
+        "image_backward": backward_image_loss,
         "jdet": jdet_loss,
         "jdet_lower": jdet_lower_loss,
         "jdet_upper": jdet_upper_loss,
@@ -109,12 +140,14 @@ def compute_loss(
         "smooth": deformation_smoothness,
         "cycle": cycle_loss,
         "cycle_displacement_rms": cycle_loss.sqrt(),
+        "inverse_consistency": inverse_consistency_loss,
+        "inverse_consistency_rms": inverse_consistency_loss.sqrt(),
         "fold_fraction": fold_fraction,
         "abs_jdet_minus_one": volume_deviation,
         "jacobian_min": jacobian_minimum,
         "jacobian_max": jacobian_maximum,
     }
-    return total, terms, output, warped
+    return total, terms, output, warped, inverse_output, backward_warped
 
 
 def detached_metrics(terms: dict[str, torch.Tensor]) -> dict[str, float]:
@@ -170,7 +203,7 @@ def fit_sequence(
 
     for epoch in range(1, epochs + 1):
         model.train()
-        loss, terms, epoch_output, _ = compute_loss(
+        loss, terms, epoch_output, _, _, _ = compute_loss(
             model,
             images,
             times,
@@ -233,7 +266,7 @@ def fit_sequence(
     model.load_state_dict(best_state, strict=True)
     model.eval()
     with torch.no_grad():
-        _, final_terms, output, warped = compute_loss(
+        _, final_terms, output, warped, inverse_output, backward_warped = compute_loss(
             model,
             images,
             times,
@@ -264,8 +297,11 @@ def fit_sequence(
             "times": batch["times"],
             "images": batch["images"].half(),
             "warped": warped.detach().cpu().half(),
+            "backward_warped": backward_warped.detach().cpu().half(),
             "phi_bar": output.phi_voxel.detach().cpu().half(),
             "displacement": output.displacement_voxel.detach().cpu().half(),
+            "inverse_phi_bar": inverse_output.phi_voxel.detach().cpu().half(),
+            "inverse_displacement": inverse_output.displacement_voxel.detach().cpu().half(),
             "velocity": output.velocity_normalized.detach().cpu().half(),
             "model_uncertainty_variance_diag": model_uncertainty_variance,
             "model_uncertainty_method": uncertainty_method,

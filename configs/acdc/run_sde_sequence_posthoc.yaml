@@ -8,15 +8,28 @@ nodeo:
     test: runs/acdc/nodeo_dir/test/summary.jsonl
 
 ambiguity:
-  # U_ambiguity is computed directly from the NODEO registration residual.
-  mode: gaussian
-  kernel_size: 5
-  sigma: 1.0
+  # Separate photometric/artifact evidence from deformation ambiguity.
+  require_bidirectional: true
+  intensity_window: 9
+  structural_window: 9
+  gain_min: 0.5
+  gain_max: 2.0
+  bias_min: -0.25
+  bias_max: 0.25
+  minimum_jacobian: 0.5
+  maximum_jacobian: 4.0
   epsilon: 0.00000001
   normalization: sequence_quantile
   quantile: 0.95
   clip: 4.0
   variance_scale: 1.0
+  weights:
+    image_intensity: 0.5
+    image_artifact: 0.5
+    structural: 0.4
+    gradient: 0.2
+    inverse: 0.3
+    jacobian: 0.1
 
 model:
   motion_rank: 16

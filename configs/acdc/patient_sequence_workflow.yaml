@@ -29,6 +29,11 @@ nodeo:
 sde:
   config: configs/acdc/run_sde_sequence_posthoc.yaml
 
+validation:
+  datasets_root: datasets
+  high_error_mm: 2.0
+  roi_mask_margin: [0, 16, 16]
+
 clinical:
   lv_label: 3
   coverage: 0.95

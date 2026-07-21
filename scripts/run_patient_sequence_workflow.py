@@ -223,6 +223,14 @@ def write_selected_nodeo_summary(
     path.write_text(json.dumps(selected) + "\n", encoding="utf-8")
 
 
+def has_bidirectional_nodeo(path: Path) -> bool:
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    return all(
+        key in payload
+        for key in ("inverse_displacement", "backward_warped")
+    )
+
+
 def fit_sde(
     *,
     root: Path,
@@ -342,6 +350,40 @@ def compute_ef(
     return output
 
 
+def validate_ambiguity(
+    *,
+    root: Path,
+    cfg: dict[str, object],
+    deformation: Path,
+    work_dir: Path,
+) -> Path:
+    validation_cfg = cfg.get("validation", {})
+    output = work_dir / "ambiguity_ed_es_validation.json"
+    run(
+        [
+            sys.executable,
+            "scripts/evaluate_ambiguity_decomposition.py",
+            "--input",
+            relative_or_absolute(deformation, root),
+            "--output",
+            relative_or_absolute(output, root),
+            "--datasets-root",
+            str(validation_cfg.get("datasets_root", "datasets")),  # type: ignore[union-attr]
+            "--device",
+            str(cfg.get("device", "auto")),
+            "--high-error-mm",
+            str(validation_cfg.get("high_error_mm", 2.0)),  # type: ignore[union-attr]
+            "--roi-mask-margin",
+            *(
+                str(value)
+                for value in validation_cfg.get("roi_mask_margin", [0, 16, 16])  # type: ignore[union-attr]
+            ),
+        ],
+        root=root,
+    )
+    return output
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/acdc/patient_sequence_workflow.yaml")
@@ -381,6 +423,26 @@ def main() -> None:
             work_dir=work_dir,
             overwrite=bool(args.overwrite_nodeo),
         )
+        if not has_bidirectional_nodeo(nodeo_output):
+            print(
+                json.dumps(
+                    {
+                        "stale_nodeo_output": str(nodeo_output),
+                        "action": "refit_with_bidirectional_loss",
+                    },
+                    indent=2,
+                ),
+                flush=True,
+            )
+            nodeo_output, nodeo_row = run_nodeo_on_demand(
+                root=root,
+                cfg=cfg,
+                run_config=str(solver_profile["run_config"]),
+                split=split,
+                split_index=split_index,
+                work_dir=work_dir,
+                overwrite=True,
+            )
     else:
         precomputed_root = resolve_path(str(solver_profile["precomputed_dir"]), root)
         assert precomputed_root is not None
@@ -390,6 +452,11 @@ def main() -> None:
             directory=precomputed_dir,
             root=root,
         )
+        if not has_bidirectional_nodeo(nodeo_output):
+            raise RuntimeError(
+                f"precomputed NODEO output is from the old one-way workflow: {nodeo_output}. "
+                "Re-run NODEO with the current configuration or use OPTION=1."
+            )
 
     selected_summary = work_dir / "selected_nodeo_summary.jsonl"
     write_selected_nodeo_summary(
@@ -403,6 +470,12 @@ def main() -> None:
         cfg=cfg,
         split=split,
         nodeo_summary=selected_summary,
+        work_dir=work_dir,
+    )
+    ambiguity_validation = validate_ambiguity(
+        root=root,
+        cfg=cfg,
+        deformation=sde_output,
         work_dir=work_dir,
     )
     ef_output = compute_ef(
@@ -420,8 +493,11 @@ def main() -> None:
         "patient": patient_name,
         "source_path": manifest_row["source_path"],
         "nodeo_output": relative_or_absolute(nodeo_output, root),
-        "uncertainty_source": "nodeo_residual_ambiguity",
+        "uncertainty_source": (
+            "photometrically_corrected_structural_bidirectional_nodeo_ambiguity"
+        ),
         "sde_output": relative_or_absolute(sde_output, root),
+        "ambiguity_validation": relative_or_absolute(ambiguity_validation, root),
         "ef_output": relative_or_absolute(ef_output, root),
         "ef": ef["ef"],
         "ef_prediction_band": ef["prediction_bands"]["ef"],

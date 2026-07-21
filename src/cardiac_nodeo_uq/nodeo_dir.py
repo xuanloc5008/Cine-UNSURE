@@ -109,7 +109,13 @@ class NODEODIRVelocityNet(nn.Module):
 
     def forward(self, phi_normalized: Tensor, t: Tensor) -> Tensor:
         batch = phi_normalized.shape[0]
-        time = t.reshape(1).to(phi_normalized)
+        time = t.reshape(-1).to(phi_normalized)
+        if time.numel() == 1:
+            time = time.expand(batch)
+        elif time.numel() != batch:
+            raise ValueError(
+                f"time must be scalar or have one value per batch item, got {time.numel()} for {batch}"
+            )
         if self.time_encoding == "periodic":
             time_values = torch.stack(
                 (torch.sin(2.0 * math.pi * time), torch.cos(2.0 * math.pi * time)),
@@ -129,6 +135,28 @@ class NODEODIRVelocityNet(nn.Module):
         for _ in range(self.smoothing_passes):
             velocity = self.smoother(velocity)
         return velocity
+
+
+class ReverseTimeDynamics(nn.Module):
+    """Vectorized inverse flow for independently selected target times."""
+
+    def __init__(
+        self,
+        velocity_net: NODEODIRVelocityNet,
+        target_times: Tensor,
+        reference_time: Tensor,
+    ) -> None:
+        super().__init__()
+        self.velocity_net = velocity_net
+        self.register_buffer("target_times", target_times.detach().clone(), persistent=False)
+        self.register_buffer("reference_time", reference_time.detach().clone(), persistent=False)
+
+    def forward(self, normalized_time: Tensor, phi: Tensor) -> Tensor:
+        physical_time = self.target_times + normalized_time * (
+            self.reference_time - self.target_times
+        )
+        time_scale = (self.reference_time - self.target_times).view(-1, 1, 1, 1, 1)
+        return self.velocity_net(phi, physical_time) * time_scale
 
 
 @dataclass
@@ -193,7 +221,7 @@ class NODEODIRModel(nn.Module):
             raise ValueError(f"expected non-empty times [T], got {tuple(times.shape)}")
         phi0 = self.identity_normalized.to(times).clone()
         if times.numel() == 1:
-            phi_normalized = phi0[None]
+            phi_normalized = phi0
         else:
             # Fixed-step methods consume step_size. Dopri5 instead adapts its
             # internal evaluations to rtol/atol, and every evaluation passes
@@ -221,6 +249,49 @@ class NODEODIRModel(nn.Module):
             velocities = torch.cat([torch.zeros_like(interval_velocities[0:1]), interval_velocities], dim=0)
         else:
             velocities = torch.zeros_like(phi_normalized)
+        return NODEODIROutput(
+            phi_normalized=phi_normalized,
+            phi_voxel=phi_voxel,
+            displacement_voxel=displacement,
+            velocity_normalized=velocities,
+        )
+
+    def integrate_inverse_sequence(self, times: Tensor) -> NODEODIROutput:
+        """Integrate every frame back to the reference time in one batched solve."""
+
+        if times.ndim != 1 or times.numel() < 1:
+            raise ValueError(f"expected non-empty times [T], got {tuple(times.shape)}")
+        identity = self.identity_normalized.to(times)
+        if times.numel() == 1:
+            phi_normalized = identity
+        else:
+            target_times = times[1:]
+            dynamics = ReverseTimeDynamics(
+                self.velocity_net,
+                target_times=target_times,
+                reference_time=times[0],
+            )
+            initial = identity.expand(len(target_times), -1, -1, -1, -1).clone()
+            integration_times = times.new_tensor([0.0, 1.0])
+            options = {"step_size": self.step_size} if self.solver in {"euler", "rk4"} else None
+            inverse = odeint_adjoint(
+                dynamics,
+                initial,
+                integration_times,
+                rtol=self.rtol,
+                atol=self.atol,
+                method=self.solver,
+                options=options,
+                adjoint_rtol=self.rtol,
+                adjoint_atol=self.atol,
+                adjoint_method=self.solver,
+                adjoint_options=options,
+            )[-1]
+            phi_normalized = torch.cat((identity, inverse), dim=0)
+        phi_voxel = self._to_voxel(phi_normalized)
+        identity_voxel = self._to_voxel(identity).squeeze(0)
+        displacement = phi_voxel - identity_voxel[None]
+        velocities = torch.zeros_like(phi_normalized)
         return NODEODIROutput(
             phi_normalized=phi_normalized,
             phi_voxel=phi_voxel,

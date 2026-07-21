@@ -14,23 +14,26 @@ Both options perform these operations for the selected patient:
 
 1. Load the complete cropped ROI cine sequence.
 2. Obtain the NODEO mean deformation `phi_bar[k]` and predicted frames.
-3. Compute registration ambiguity directly from the NODEO residual:
+3. Fit local affine intensity correction in both directions and retain
+   intensity/artifact evidence as `image_quality_map`.
+4. Build deformation ambiguity from structural similarity, gradient
+   orientation, forward/inverse consistency, and Jacobian violation:
 
    ```text
-   residual[k] = GaussianSmooth((I[k] - warp(I[0], phi_bar[k]))^2)
-   scale = sequence_quantile(residual, q)
-   U_ambiguity[k] = clip(residual[k] / scale, 0, c)
+   U_deformation = w_s U_structural + w_g U_gradient
+                 + w_i U_inverse + w_j U_jacobian
    ```
 
-4. Fit a patient-specific SDE-CVGRU with masked-frame and full-trajectory MSE
+5. Fit a patient-specific SDE-CVGRU with masked-frame and full-trajectory MSE
    against low-rank NODEO motion codes. No uncertainty term is optimized.
-5. Freeze the fitted network and propagate `U_ambiguity` analytically through
+6. Freeze the fitted network and propagate only `U_deformation` analytically through
    the CVGRU and deformation decoder Jacobians.
-6. Add process covariance from the SDE dynamics and NODEO model variance from
+7. Add process covariance from the SDE dynamics and NODEO model variance from
    its late-checkpoint ensemble. Retain NODEO as the final mean trajectory.
-7. Save predicted frames, voxel-wise deformation variance, and separate
+8. Save predicted frames, evidence maps, voxel-wise deformation variance, and separate
    ambiguity/process/NODEO-model covariance components.
-8. Read ACDC ED/ES indices and propagate deformation covariance to an
+9. Validate ambiguity against ED/ES label-propagation surface error, then read
+   ACDC ED/ES indices and propagate deformation covariance to an
    uncalibrated EF prediction band.
 
 The reported uncertainty is a registration-ambiguity proxy plus SDE process
@@ -87,6 +90,7 @@ The directory contains:
 ```text
 selected_nodeo_summary.jsonl selected or newly fitted NODEO result
 sde/test/*.pt                mean deformation and analytical uncertainty
+ambiguity_ed_es_validation.json uncertainty/error association at labelled frames
 ef_prediction_band.json      EF, variance, standard error, and prediction band
 workflow_result.json         paths, uncertainty source, and final EF summary
 ```

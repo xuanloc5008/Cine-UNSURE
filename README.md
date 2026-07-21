@@ -1,4 +1,4 @@
-# NODEO-DIR + residual ambiguity + post-hoc SDE-CVGRU
+# Bidirectional NODEO-DIR + decomposed ambiguity + post-hoc SDE-CVGRU
 
 The active workflow estimates a NODEO deformation trajectory for each cropped
 4D cine CMR sequence and derives deformation uncertainty directly from the
@@ -8,8 +8,9 @@ registration ambiguity map `U_ambiguity`.
 cropped ROI cine sequence
   -> sequential NODEO-DIR with configurable ODE integration
   -> mean deformation phi_bar[k]
-  -> predicted frame warp(I[0], phi_bar[k])
-  -> U_ambiguity[k] from the smoothed squared registration residual
+  -> forward and inverse deformation with bidirectional consistency
+  -> local affine intensity correction and structural evidence maps
+  -> separate image-quality and deformation-ambiguity maps
   -> per-sequence masked + full-trajectory MSE fit of SDE-CVGRU mean dynamics
   -> frozen-network analytical Jacobian propagation
   -> ambiguity + SDE process + NODEO model covariance
@@ -21,16 +22,20 @@ checkpoint is used.
 
 ## Uncertainty definition
 
-For frame `k`:
+The raw photometric mismatch is not used as deformation uncertainty. The
+pipeline first fits a local affine intensity model, then combines normalized
+structural, gradient-orientation, inverse-consistency, and Jacobian-violation
+evidence:
 
 ```text
-r[k] = GaussianSmooth((I[k] - warp(I[0], phi_bar[k]))^2)
-s = quantile({r[k, x] over the complete sequence}, q)
-U_ambiguity[k] = clip(r[k] / max(s, epsilon), 0, c)
+I_corrected = gain * warp(I[0], phi_bar[k]) + bias
+U_deformation = 0.4 U_structural + 0.2 U_gradient
+              + 0.3 U_inverse    + 0.1 U_jacobian
+U_image       = 0.5 U_intensity  + 0.5 U_artifact
 ```
 
-`U_ambiguity[0]` is zero. A single sequence-level scale preserves relative
-ambiguity amplitudes between frames. The map is used as an isotropic
+`U_deformation[0]` is zero. Each evidence family uses a robust sequence-level
+scale. Only `U_deformation` is used as an isotropic
 voxel-space covariance proxy and projected into the NODEO motion basis. The
 SDE-CVGRU mean is fitted with masked-frame prediction MSE plus full-trajectory
 reconstruction MSE. Frozen-network analytical Jacobians then propagate two
@@ -44,8 +49,9 @@ R_phi_total[k] = R_phi_ambiguity[k]
 ```
 
 The final mean deformation remains exactly the NODEO result. NODEO uses a
-periodic time encoding, a two-sided Jacobian determinant penalty, and a soft
-end-of-cycle closure loss. `R_phi_NODEO-model` is a practical late-checkpoint
+periodic time encoding, forward and backward image losses, inverse consistency,
+a two-sided Jacobian determinant penalty, and a soft end-of-cycle closure loss.
+`R_phi_NODEO-model` is a practical late-checkpoint
 ensemble proxy for local optimization/model variability. It is not an exact
 Bayesian parameter posterior, scanner-noise covariance, or a calibrated
 coverage guarantee.
@@ -126,6 +132,11 @@ PATIENT=patient101 SPLIT=test ./run_patient_sequence_workflow.sh
 
 No score checkpoint argument is accepted or needed.
 
+Existing NODEO files from the former one-way workflow do not contain
+`inverse_displacement`. Re-run NODEO before SDE propagation. Option 1 detects
+and refits such stale patient outputs automatically; Option 2 reports a clear
+error instead of silently using incompatible uncertainty inputs.
+
 ## Main outputs
 
 Each SDE result stores the NODEO mean and an exact diagonal decomposition:
@@ -135,6 +146,14 @@ mean_deformation
 total_displacement
 predicted_frames
 residual_squared
+image_quality_map
+deformation_ambiguity_map
+intensity_change_map
+artifact_residual_map
+structural_residual_map
+gradient_residual_map
+inverse_consistency_map
+jacobian_violation_map
 ambiguity_map
 deformation_variance_diag
 ambiguity_deformation_variance_diag
@@ -146,6 +165,10 @@ motion_covariance_factor
 ambiguity_motion_covariance_factor
 process_motion_covariance_factor
 ```
+
+The single-patient workflow also writes `ambiguity_ed_es_validation.json`,
+which compares ED-to-ES label-propagation surface errors with uncertainty using
+Spearman correlation, error-detection ROC-AUC, and sparsification error (AUSE).
 
 For the patient workflow, `ef_prediction_band.json` contains EF, propagated
 variance, standard error, and the analytical interval. Validate its empirical

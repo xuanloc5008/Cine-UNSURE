@@ -17,8 +17,16 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cardiac_nodeo_uq.config import load_yaml, project_root, resolve_path, select_device
-from cardiac_nodeo_uq.nodeo_ops import SpatialTransformer3D
+from cardiac_nodeo_uq.nodeo_ops import (
+    SpatialTransformer3D,
+    compose_displacements,
+    jacobian_det_3d,
+)
 from cardiac_nodeo_uq.nodeo_roi_data import canonical_source_key
+from cardiac_nodeo_uq.residual_decomposition import (
+    decompose_residuals,
+    photometric_evidence,
+)
 from cardiac_nodeo_uq.sde_sequence_posthoc import (
     PerSequencePostHocSDERNN,
     fit_linear_basis,
@@ -110,72 +118,6 @@ def normalize_codes(codes: Tensor, covariance: Tensor | None = None) -> tuple[Te
     return normalized, scale, normalized_covariance
 
 
-def gaussian_smooth_ambiguity(
-    values: Tensor,
-    *,
-    kernel_size: int,
-    sigma: float,
-) -> Tensor:
-    if kernel_size < 1 or kernel_size % 2 == 0:
-        raise ValueError("ambiguity kernel_size must be a positive odd integer")
-    if sigma <= 0:
-        raise ValueError("ambiguity sigma must be positive")
-    radius = kernel_size // 2
-    coordinates = torch.arange(kernel_size, device=values.device, dtype=values.dtype) - radius
-    kernel_1d = torch.exp(-0.5 * (coordinates / float(sigma)).square())
-    kernel_1d = kernel_1d / kernel_1d.sum()
-    kernel = torch.einsum("i,j,k->ijk", kernel_1d, kernel_1d, kernel_1d)
-    kernel = kernel[None, None]
-    padded = F.pad(values[:, None], (radius,) * 6, mode="replicate")
-    return F.conv3d(padded, kernel)[:, 0]
-
-
-def residual_ambiguity(
-    images: Tensor,
-    predicted_frames: Tensor,
-    *,
-    mode: str,
-    kernel_size: int,
-    sigma: float,
-    epsilon: float,
-    normalization: str,
-    quantile: float,
-    clip: float,
-) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    residual_squared = (images - predicted_frames).square().mean(dim=1)
-    if mode == "gaussian":
-        variance_proxy = gaussian_smooth_ambiguity(
-            residual_squared,
-            kernel_size=kernel_size,
-            sigma=sigma,
-        )
-    elif mode == "none":
-        variance_proxy = residual_squared
-    else:
-        raise ValueError("ambiguity mode must be 'none' or 'gaussian'")
-    variance_proxy = variance_proxy + float(epsilon)
-    if not 0.0 < quantile <= 1.0:
-        raise ValueError("ambiguity quantile must be in (0, 1]")
-    frame_scale = torch.quantile(variance_proxy.flatten(1), quantile, dim=1)
-    if normalization == "frame_max":
-        denominator = variance_proxy.flatten(1).amax(dim=1).clamp_min(float(epsilon))
-        ambiguity = variance_proxy / denominator[:, None, None, None]
-        sequence_scale = denominator.mean()
-        relative_frame_scale = denominator / sequence_scale.clamp_min(float(epsilon))
-    elif normalization == "sequence_quantile":
-        sequence_values = variance_proxy[1:].reshape(-1) if len(variance_proxy) > 1 else variance_proxy.reshape(-1)
-        sequence_scale = torch.quantile(sequence_values, quantile).clamp_min(float(epsilon))
-        ambiguity = variance_proxy / sequence_scale
-        relative_frame_scale = frame_scale / sequence_scale
-    else:
-        raise ValueError("ambiguity normalization must be 'frame_max' or 'sequence_quantile'")
-    ambiguity = ambiguity.clamp(0.0, float(clip))
-    # I0 is mapped to itself and is treated as a deterministic initial state.
-    ambiguity[0].zero_()
-    relative_frame_scale[0] = 0.0
-    return residual_squared, ambiguity, relative_frame_scale, sequence_scale
-
-
 def fit_sequence(
     *,
     nodeo_payload: dict[str, object],
@@ -220,24 +162,113 @@ def fit_sequence(
         )
 
     ambiguity_normalization = str(ambiguity_cfg.get("normalization", "sequence_quantile"))
+    if ambiguity_normalization != "sequence_quantile":
+        raise ValueError("ambiguity normalization must be 'sequence_quantile'")
     ambiguity_quantile = float(ambiguity_cfg.get("quantile", 0.95))
     ambiguity_clip = float(ambiguity_cfg.get("clip", 4.0))
+    ambiguity_epsilon = float(ambiguity_cfg.get("epsilon", 1.0e-8))
     transformer = SpatialTransformer3D(tuple(int(v) for v in images.shape[-3:])).to(device)
     with torch.no_grad():
         nodeo_predicted_frames = transformer(
             images[0:1].expand(length, -1, -1, -1, -1),
             nodeo_displacement,
         )
-        residual_squared, ambiguity_map, ambiguity_frame_scale, ambiguity_sequence_scale = residual_ambiguity(
+        inverse_displacement = nodeo_payload.get("inverse_displacement")
+        if inverse_displacement is None:
+            if bool(ambiguity_cfg.get("require_bidirectional", True)):
+                raise KeyError(
+                    "NODEO output has no 'inverse_displacement'. Re-run NODEO with the "
+                    "bidirectional implementation before fitting post-hoc SDE uncertainty."
+                )
+            inverse_displacement = torch.zeros_like(nodeo_displacement)
+        else:
+            inverse_displacement = inverse_displacement.float().to(device)  # type: ignore[union-attr]
+        if inverse_displacement.shape != nodeo_displacement.shape:
+            raise ValueError(
+                "inverse displacement shape mismatch: "
+                f"{tuple(inverse_displacement.shape)} vs {tuple(nodeo_displacement.shape)}"
+            )
+
+        evidence_kwargs = {
+            "intensity_window": int(ambiguity_cfg.get("intensity_window", 9)),
+            "structural_window": int(ambiguity_cfg.get("structural_window", 9)),
+            "gain_min": float(ambiguity_cfg.get("gain_min", 0.5)),
+            "gain_max": float(ambiguity_cfg.get("gain_max", 2.0)),
+            "bias_min": float(ambiguity_cfg.get("bias_min", -0.25)),
+            "bias_max": float(ambiguity_cfg.get("bias_max", 0.25)),
+            "epsilon": ambiguity_epsilon,
+        }
+        forward_evidence = photometric_evidence(
             images,
             nodeo_predicted_frames,
-            mode=str(ambiguity_cfg.get("mode", "gaussian")),
-            kernel_size=int(ambiguity_cfg.get("kernel_size", 5)),
-            sigma=float(ambiguity_cfg.get("sigma", 1.0)),
-            epsilon=float(ambiguity_cfg.get("epsilon", 1.0e-8)),
-            normalization=ambiguity_normalization,
+            **evidence_kwargs,
+        )
+        reference_frames = images[0:1].expand(length, -1, -1, -1, -1)
+        backward_predicted_frames = transformer(images, inverse_displacement)
+        backward_evidence = photometric_evidence(
+            reference_frames,
+            backward_predicted_frames,
+            **evidence_kwargs,
+        )
+
+        def backward_to_target(values: Tensor) -> Tensor:
+            return transformer(values[:, None], nodeo_displacement)[:, 0]
+
+        backward_structural_target = backward_to_target(
+            backward_evidence.structural_residual
+        )
+        backward_gradient_target = backward_to_target(
+            backward_evidence.gradient_residual
+        )
+        backward_image_raw = (
+            backward_evidence.intensity_change.sqrt()
+            + backward_evidence.corrected_residual.sqrt()
+            * (1.0 - backward_evidence.edge_confidence)
+        )
+        backward_image_target = backward_to_target(backward_image_raw)
+
+        reference_cycle = compose_displacements(
+            nodeo_displacement,
+            inverse_displacement,
+            transformer=transformer,
+        )
+        target_cycle = compose_displacements(
+            inverse_displacement,
+            nodeo_displacement,
+            transformer=transformer,
+        )
+        inverse_consistency = 0.5 * (
+            target_cycle.square().sum(dim=1).sqrt()
+            + backward_to_target(reference_cycle.square().sum(dim=1).sqrt())
+        )
+
+        determinant = jacobian_det_3d(phi_bar.float())
+        determinant = F.pad(determinant[:, None], (0, 1, 0, 1, 0, 1), mode="replicate")[:, 0]
+        jacobian_violation = (
+            F.relu(float(ambiguity_cfg.get("minimum_jacobian", 0.5)) - determinant)
+            + F.relu(determinant - float(ambiguity_cfg.get("maximum_jacobian", 4.0)))
+        )
+        decomposition = decompose_residuals(
+            forward=forward_evidence,
+            backward_structural_target_space=backward_structural_target,
+            backward_gradient_target_space=backward_gradient_target,
+            backward_image_quality_target_space=backward_image_target,
+            inverse_consistency=inverse_consistency,
+            jacobian_violation=jacobian_violation,
             quantile=ambiguity_quantile,
             clip=ambiguity_clip,
+            epsilon=ambiguity_epsilon,
+            weights=dict(ambiguity_cfg.get("weights", {})),
+        )
+        residual_squared = forward_evidence.raw_residual
+        image_quality_map = decomposition.image_quality_map
+        ambiguity_map = decomposition.deformation_ambiguity_map
+        ambiguity_frame_scale = torch.quantile(
+            ambiguity_map.flatten(1), ambiguity_quantile, dim=1
+        )
+        ambiguity_frame_scale[0] = 0.0
+        ambiguity_sequence_scale = torch.quantile(
+            ambiguity_map[1:].reshape(-1), ambiguity_quantile
         )
 
     motion_mean, motion_basis, motion_code = fit_linear_basis(
@@ -448,7 +479,7 @@ def fit_sequence(
     )
 
     payload: dict[str, object] = {
-        "method": "nodeo_residual_ambiguity_posthoc_sde_cvgru",
+        "method": "nodeo_decomposed_ambiguity_posthoc_sde_cvgru",
         "mean_source": "nodeo_locked",
         "dataset": nodeo_payload["dataset"],
         "source_path": nodeo_payload["source_path"],
@@ -461,16 +492,39 @@ def fit_sequence(
         "mean_displacement": mean_displacement.detach().cpu().half(),
         "total_displacement": mean_displacement.detach().cpu().half(),
         "predicted_frames": predicted_frames.detach().cpu().half(),
+        "backward_predicted_frames": backward_predicted_frames.detach().cpu().half(),
+        "intensity_corrected_frames": forward_evidence.corrected.detach().cpu().half(),
+        "backward_intensity_corrected_frames": backward_evidence.corrected.detach().cpu().half(),
+        "inverse_displacement": inverse_displacement.detach().cpu().half(),
         "sde_reconstructed_deformation": sde_reconstructed_deformation.detach().cpu().half(),
         "sde_reconstructed_displacement": sde_reconstructed_displacement.detach().cpu().half(),
         "residual_squared": residual_squared.detach().cpu().float(),
+        "raw_photometric_residual": forward_evidence.raw_residual.detach().cpu().float(),
+        "corrected_photometric_residual": forward_evidence.corrected_residual.detach().cpu().float(),
+        "intensity_explained_fraction": forward_evidence.intensity_explained_fraction.detach().cpu().float(),
+        "intensity_gain": forward_evidence.gain.detach().cpu().half(),
+        "intensity_bias": forward_evidence.bias.detach().cpu().half(),
+        "intensity_change_map": decomposition.intensity_change_map.detach().cpu().float(),
+        "artifact_residual_map": decomposition.artifact_residual_map.detach().cpu().float(),
+        "structural_residual_map": decomposition.structural_residual_map.detach().cpu().float(),
+        "gradient_residual_map": decomposition.gradient_residual_map.detach().cpu().float(),
+        "inverse_consistency_map": decomposition.inverse_consistency_map.detach().cpu().float(),
+        "jacobian_violation_map": decomposition.jacobian_violation_map.detach().cpu().float(),
+        "image_quality_map": image_quality_map.detach().cpu().float(),
+        "deformation_ambiguity_map": ambiguity_map.detach().cpu().float(),
         "ambiguity_map": ambiguity_map.detach().cpu().float(),
         "ambiguity_frame_scale": ambiguity_frame_scale.detach().cpu().float(),
         "ambiguity_sequence_scale": float(ambiguity_sequence_scale),
         "ambiguity_definition": (
+            "intensity correction -> structural/gradient evidence -> bidirectional "
+            "inverse consistency -> Jacobian violation; image-quality evidence is "
+            "stored separately and only deformation_ambiguity_map enters SDE; "
             f"normalization={ambiguity_normalization}; quantile={ambiguity_quantile}; "
-            f"clip={ambiguity_clip}; U_ambiguity[0] = 0"
+            f"clip={ambiguity_clip}; deformation_ambiguity_map[0] = 0"
         ),
+        "ambiguity_component_scales": {
+            key: float(value) for key, value in decomposition.component_scales.items()
+        },
         "deformation_variance_diag": voxel_variance.detach().cpu().float(),
         "deformation_covariance_diag": voxel_variance.detach().cpu().float(),
         "ambiguity_deformation_variance_diag": ambiguity_voxel_variance.detach().cpu().float(),
@@ -498,8 +552,9 @@ def fit_sequence(
         ),
         "uncertainty_training": (
             "post-hoc only; SDE-CVGRU weights optimized with masked-frame and "
-            "full-trajectory reconstruction MSE, U_ambiguity enters analytical "
-            "covariance directly, and the final mean remains locked to NODEO"
+            "full-trajectory reconstruction MSE, deformation ambiguity after "
+            "photometric/structural decomposition enters analytical covariance "
+            "directly, and the final mean remains locked to NODEO"
         ),
     }
     metrics: dict[str, float | int | str] = {
@@ -524,6 +579,14 @@ def fit_sequence(
         "mean_process_deformation_variance": float(process_voxel_variance.mean()),
         "mean_nodeo_model_deformation_variance": float(nodeo_model_voxel_variance.mean()),
         "mean_ambiguity": float(ambiguity_map.mean()),
+        "mean_image_quality": float(image_quality_map.mean()),
+        "mean_intensity_explained_fraction": float(
+            forward_evidence.intensity_explained_fraction[1:].mean()
+        ),
+        "mean_structural_residual": float(decomposition.structural_residual_map.mean()),
+        "mean_gradient_residual": float(decomposition.gradient_residual_map.mean()),
+        "mean_inverse_consistency": float(decomposition.inverse_consistency_map.mean()),
+        "mean_jacobian_violation": float(decomposition.jacobian_violation_map.mean()),
         "ambiguity_sequence_scale": float(ambiguity_sequence_scale),
     }
     return payload, metrics

@@ -76,6 +76,27 @@ class SpatialTransformer3D(nn.Module):
         return warped
 
 
+def compose_displacements(
+    outer: Tensor,
+    inner: Tensor,
+    *,
+    transformer: SpatialTransformer3D | None = None,
+) -> Tensor:
+    """Compose voxel displacements as ``outer(inner(x))``.
+
+    A displacement maps ``x`` to ``x + displacement(x)``. The returned field
+    is therefore ``inner + warp(outer, inner)``.
+    """
+
+    if outer.shape != inner.shape or outer.ndim != 5 or outer.shape[1] != 3:
+        raise ValueError(
+            f"expected matching [B,3,D,H,W] fields, got {tuple(outer.shape)} and {tuple(inner.shape)}"
+        )
+    spatial_shape = tuple(int(v) for v in outer.shape[-3:])
+    transformer = transformer or SpatialTransformer3D(spatial_shape)
+    return inner + transformer(outer, inner)
+
+
 def generate_grid3d_normalized(shape: tuple[int, int, int], *, device: torch.device | None = None) -> Tensor:
     """Return NODEO normalized grid [1, 3, D, H, W] in [-1, 1]."""
 
