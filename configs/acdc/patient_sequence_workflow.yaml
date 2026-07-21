@@ -25,6 +25,22 @@ nodeo:
       run_config: configs/acdc/train_nodeo_dir_roi_dopri5.yaml
       precomputed_dir: runs/acdc/nodeo_dir_dopri5
       sde_output_dir: runs/acdc/sde_sequence_posthoc_dopri5
+    rk4_multiscale:
+      run_config: configs/acdc/experiments/02_rk4_multiscale.yaml
+      precomputed_dir: runs/acdc/experiments/02_rk4_multiscale
+      sde_output_dir: runs/acdc/sde_sequence_posthoc_rk4_multiscale
+    rk4_highres:
+      run_config: configs/acdc/experiments/03_rk4_highres_velocity.yaml
+      precomputed_dir: runs/acdc/experiments/03_rk4_highres_velocity
+      sde_output_dir: runs/acdc/sde_sequence_posthoc_rk4_highres
+    rk4_structural:
+      run_config: configs/acdc/experiments/04_rk4_structural.yaml
+      precomputed_dir: runs/acdc/experiments/04_rk4_structural
+      sde_output_dir: runs/acdc/sde_sequence_posthoc_rk4_structural
+    rk4_lbfgs:
+      run_config: configs/acdc/experiments/05_rk4_adam_lbfgs.yaml
+      precomputed_dir: runs/acdc/experiments/05_rk4_adam_lbfgs
+      sde_output_dir: runs/acdc/sde_sequence_posthoc_rk4_lbfgs
 
 sde:
   config: configs/acdc/run_sde_sequence_posthoc.yaml

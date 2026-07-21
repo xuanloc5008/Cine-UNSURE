@@ -1,0 +1,57 @@
+seed: 2026
+device: auto
+
+data:
+  manifest: processed/acdc/nodeo_roi_splits.jsonl
+  min_length: 2
+
+model:
+  image_shape: [16, 96, 96]
+  encoder_channels: 32
+  encoder_depth: 5
+  output_downsamples: 0
+  bottleneck_dim: 64
+  smoothing_kernel: gaussian
+  smoothing_window: 7
+  smoothing_sigma: 1.25
+  smoothing_passes: 1
+  time_encoding: periodic
+  solver: rk4
+  step_size: 0.05
+
+loss:
+  ncc_win: 9
+  ncc_scales: [1.0, 0.5, 0.25]
+  ncc_windows: [9, 5, 3]
+  ncc_weights: [0.5, 0.3, 0.2]
+  lambda_gradient: 0.10
+  minimum_jacobian: 0.5
+  maximum_jacobian: 4.0
+  lambda_j: 2.5
+  lambda_v: 0.00005
+  lambda_df: 0.02
+  lambda_cycle: 0.05
+  lambda_backward: 1.0
+  lambda_inverse: 0.10
+
+uncertainty:
+  method: late_checkpoint_ensemble
+  model_uncertainty_tail: 100
+  model_uncertainty_stride: 5
+  model_uncertainty_scale: 1.0
+
+optim:
+  epochs_per_sequence: 500
+  lr: 0.001
+  weight_decay: 0.0
+  selection_tail: 100
+  log_every: 25
+  lbfgs_iterations: 25
+  lbfgs_max_eval: 40
+  lbfgs_lr: 0.5
+  lbfgs_history_size: 10
+  lbfgs_tolerance_grad: 1.0e-7
+  lbfgs_tolerance_change: 1.0e-9
+
+output:
+  run_dir: runs/acdc/experiments/05_rk4_adam_lbfgs

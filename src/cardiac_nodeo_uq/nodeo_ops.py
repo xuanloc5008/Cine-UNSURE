@@ -54,6 +54,99 @@ class LocalNCC3D(nn.Module):
         return (1.0 - cc.mean()).float()
 
 
+class MultiScaleLocalNCC3D(nn.Module):
+    """Average local NCC losses over a spatial image pyramid.
+
+    Each scale has its own odd NCC window. Smaller pyramid levels therefore
+    retain a meaningful local window instead of padding a very small volume
+    with a full-resolution kernel.
+    """
+
+    def __init__(
+        self,
+        *,
+        scales: tuple[float, ...],
+        windows: tuple[int, ...],
+        weights: tuple[float, ...] | None = None,
+    ) -> None:
+        super().__init__()
+        if not scales or len(scales) != len(windows):
+            raise ValueError("scales and windows must be non-empty and have equal length")
+        if any(scale <= 0.0 or scale > 1.0 for scale in scales):
+            raise ValueError("NCC scales must satisfy 0 < scale <= 1")
+        if any(window < 1 or window % 2 == 0 for window in windows):
+            raise ValueError("NCC windows must be positive odd integers")
+        if weights is None:
+            weights = tuple(1.0 for _ in scales)
+        if len(weights) != len(scales) or any(weight < 0.0 for weight in weights):
+            raise ValueError("NCC weights must match scales and be non-negative")
+        weight_sum = float(sum(weights))
+        if weight_sum <= 0.0:
+            raise ValueError("at least one NCC weight must be positive")
+
+        self.scales = tuple(float(scale) for scale in scales)
+        self.losses = nn.ModuleList(LocalNCC3D(win=window) for window in windows)
+        normalized = torch.tensor(weights, dtype=torch.float32) / weight_sum
+        self.register_buffer("weights", normalized, persistent=False)
+
+    def forward(self, fixed: Tensor, warped: Tensor) -> Tensor:
+        terms: list[Tensor] = []
+        for scale, loss in zip(self.scales, self.losses, strict=True):
+            if scale == 1.0:
+                fixed_level = fixed
+                warped_level = warped
+            else:
+                fixed_level = F.interpolate(
+                    fixed,
+                    scale_factor=scale,
+                    mode="trilinear",
+                    align_corners=True,
+                    recompute_scale_factor=False,
+                )
+                warped_level = F.interpolate(
+                    warped,
+                    size=fixed_level.shape[-3:],
+                    mode="trilinear",
+                    align_corners=True,
+                )
+            terms.append(loss(fixed_level, warped_level))
+        stacked = torch.stack(terms)
+        return (stacked * self.weights.to(stacked)).sum()
+
+
+class GradientOrientationLoss3D(nn.Module):
+    """Structural loss based on local 3D gradient orientation agreement."""
+
+    def __init__(self, eps: float = 1.0e-4) -> None:
+        super().__init__()
+        self.eps = float(eps)
+
+    @staticmethod
+    def _gradient(image: Tensor) -> Tensor:
+        padded = F.pad(image.float(), (1, 1, 1, 1, 1, 1), mode="replicate")
+        dz = 0.5 * (padded[:, :, 2:, 1:-1, 1:-1] - padded[:, :, :-2, 1:-1, 1:-1])
+        dy = 0.5 * (padded[:, :, 1:-1, 2:, 1:-1] - padded[:, :, 1:-1, :-2, 1:-1])
+        dx = 0.5 * (padded[:, :, 1:-1, 1:-1, 2:] - padded[:, :, 1:-1, 1:-1, :-2])
+        return torch.cat((dz, dy, dx), dim=1)
+
+    def forward(self, fixed: Tensor, warped: Tensor) -> Tensor:
+        fixed_gradient = self._gradient(fixed)
+        warped_gradient = self._gradient(warped)
+        dot = (fixed_gradient * warped_gradient).sum(dim=1)
+        fixed_norm = fixed_gradient.square().sum(dim=1)
+        warped_norm = warped_gradient.square().sum(dim=1)
+        orientation_similarity = dot.square() / (
+            fixed_norm * warped_norm + self.eps
+        )
+        # Flat background carries no structural alignment information.
+        weight = fixed_norm.sqrt()
+        weight = weight / weight.mean().clamp_min(self.eps)
+        weight = weight.clamp(max=5.0)
+        return ((1.0 - orientation_similarity) * weight).sum() / weight.sum().clamp_min(
+            self.eps
+        )
+
+
 class SpatialTransformer3D(nn.Module):
     """Voxel-flow spatial transformer following NODEO-DIR conventions."""
 

@@ -66,7 +66,9 @@ def sparsification_error(errors: np.ndarray, scores: np.ndarray) -> float | None
 
     uncertainty_order = np.argsort(scores)[::-1]
     oracle_order = np.argsort(errors)[::-1]
-    return float(np.trapz(curve(uncertainty_order) - curve(oracle_order), fractions))
+    difference = curve(uncertainty_order) - curve(oracle_order)
+    widths = fractions[1:] - fractions[:-1]
+    return float(np.sum(0.5 * (difference[:-1] + difference[1:]) * widths))
 
 
 def association(errors: np.ndarray, scores: np.ndarray, threshold_mm: float) -> dict[str, object]:

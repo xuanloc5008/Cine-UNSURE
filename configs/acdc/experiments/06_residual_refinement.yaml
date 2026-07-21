@@ -1,0 +1,27 @@
+seed: 2026
+device: auto
+
+model:
+  coarse_scale: 0.5
+  smoothing_window: 7
+  smoothing_sigma: 1.25
+  integration_steps: 5
+
+loss:
+  ncc_scales: [1.0, 0.5, 0.25]
+  ncc_windows: [9, 5, 3]
+  ncc_weights: [0.5, 0.3, 0.2]
+  lambda_gradient: 0.10
+  minimum_jacobian: 0.5
+  maximum_jacobian: 4.0
+  lambda_j: 3.0
+  lambda_magnitude: 0.001
+  lambda_spatial: 0.05
+  lambda_temporal: 0.10
+  lambda_cycle: 0.05
+
+optim:
+  iterations: 250
+  lr: 0.01
+  weight_decay: 0.0
+  log_every: 25

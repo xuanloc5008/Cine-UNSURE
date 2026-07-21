@@ -238,6 +238,7 @@ def fit_sde(
     split: str,
     nodeo_summary: Path,
     work_dir: Path,
+    overwrite: bool,
 ) -> Path:
     base_path = resolve_path(cfg["sde"]["config"], root)  # type: ignore[index]
     assert base_path is not None
@@ -248,21 +249,39 @@ def fit_sde(
     sde_cfg["output"]["run_dir"] = relative_or_absolute(work_dir / "sde", root)
     runtime_cfg = work_dir / "runtime_sde.yaml"
     write_yaml(runtime_cfg, sde_cfg)
-    run(
-        [
-            sys.executable,
-            "scripts/run_sde_sequence_posthoc.py",
-            "--config",
-            relative_or_absolute(runtime_cfg, root),
-            "--split",
-            split,
-            "--limit",
-            "1",
-            "--overwrite",
-        ],
-        root=root,
-    )
-    outputs = sorted((work_dir / "sde" / split).glob("[0-9]*.pt"))
+    output_dir = work_dir / "sde" / split
+    outputs = sorted(output_dir.glob("[0-9]*.pt"))
+    reusable = False
+    if len(outputs) == 1 and not overwrite:
+        payload = torch.load(outputs[0], map_location="cpu", weights_only=False)
+        reusable = (
+            str(payload.get("method"))
+            == "nodeo_decomposed_ambiguity_posthoc_sde_cvgru"
+        )
+    if reusable:
+        print(
+            json.dumps(
+                {"reuse_sde_output": relative_or_absolute(outputs[0], root)},
+                indent=2,
+            ),
+            flush=True,
+        )
+    else:
+        run(
+            [
+                sys.executable,
+                "scripts/run_sde_sequence_posthoc.py",
+                "--config",
+                relative_or_absolute(runtime_cfg, root),
+                "--split",
+                split,
+                "--limit",
+                "1",
+                "--overwrite",
+            ],
+            root=root,
+        )
+        outputs = sorted(output_dir.glob("[0-9]*.pt"))
     if len(outputs) != 1:
         raise RuntimeError(f"expected one SDE output, found {outputs}")
     return outputs[0]
@@ -390,8 +409,17 @@ def main() -> None:
     parser.add_argument("--option", type=int, choices=(1, 2))
     parser.add_argument("--patient")
     parser.add_argument("--split", choices=("train", "val", "test"))
-    parser.add_argument("--solver", choices=("euler", "rk4", "dopri5"))
+    parser.add_argument(
+        "--solver",
+        help="NODEO solver/experiment profile declared under nodeo.solver_profiles",
+    )
     parser.add_argument("--overwrite-nodeo", action="store_true")
+    parser.add_argument("--overwrite-sde", action="store_true")
+    parser.add_argument(
+        "--nodeo-only",
+        action="store_true",
+        help="stop after fitting/selecting NODEO; useful for registration ablations",
+    )
     args = parser.parse_args()
 
     root = project_root()
@@ -465,12 +493,27 @@ def main() -> None:
         output=nodeo_output,
         root=root,
     )
+    if args.nodeo_only:
+        result = {
+            "option": option,
+            "nodeo_profile": solver,
+            "split": split,
+            "patient": patient_name,
+            "source_path": manifest_row["source_path"],
+            "nodeo_output": relative_or_absolute(nodeo_output, root),
+            "selected_summary": relative_or_absolute(selected_summary, root),
+        }
+        result_path = work_dir / "nodeo_only_result.json"
+        result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps(result, indent=2))
+        return
     sde_output = fit_sde(
         root=root,
         cfg=cfg,
         split=split,
         nodeo_summary=selected_summary,
         work_dir=work_dir,
+        overwrite=bool(args.overwrite_sde or args.overwrite_nodeo),
     )
     ambiguity_validation = validate_ambiguity(
         root=root,

@@ -22,5 +22,11 @@ fi
 if [[ "${OVERWRITE_NODEO:-0}" == "1" ]]; then
   cmd+=(--overwrite-nodeo)
 fi
+if [[ "${OVERWRITE_SDE:-0}" == "1" ]]; then
+  cmd+=(--overwrite-sde)
+fi
+if [[ "${NODEO_ONLY:-0}" == "1" ]]; then
+  cmd+=(--nodeo-only)
+fi
 
 "${cmd[@]}"

@@ -17,7 +17,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from cardiac_nodeo_uq.config import as_tuple_int, load_yaml, project_root, resolve_path, select_device
 from cardiac_nodeo_uq.nodeo_dir import NODEODIRModel
 from cardiac_nodeo_uq.nodeo_ops import (
+    GradientOrientationLoss3D,
     LocalNCC3D,
+    MultiScaleLocalNCC3D,
     SpatialTransformer3D,
     compose_displacements,
     nodeo_jacobian_metrics,
@@ -63,12 +65,35 @@ def build_model(cfg: dict, device: torch.device) -> NODEODIRModel:
     ).to(device)
 
 
+def build_similarity_loss(loss_cfg: dict, device: torch.device) -> torch.nn.Module:
+    scales = loss_cfg.get("ncc_scales")
+    if scales is None:
+        return LocalNCC3D(win=int(loss_cfg["ncc_win"])).to(device)
+    scales = tuple(float(value) for value in scales)
+    windows = tuple(
+        int(value)
+        for value in loss_cfg.get("ncc_windows", [loss_cfg["ncc_win"]] * len(scales))
+    )
+    weights_value = loss_cfg.get("ncc_weights")
+    weights = (
+        None
+        if weights_value is None
+        else tuple(float(value) for value in weights_value)
+    )
+    return MultiScaleLocalNCC3D(
+        scales=scales,
+        windows=windows,
+        weights=weights,
+    ).to(device)
+
+
 def compute_loss(
     model: NODEODIRModel,
     images: torch.Tensor,
     times: torch.Tensor,
     *,
-    ncc: LocalNCC3D,
+    similarity: torch.nn.Module,
+    gradient_loss: GradientOrientationLoss3D,
     transformer: SpatialTransformer3D,
     loss_cfg: dict,
 ) -> tuple[
@@ -85,12 +110,23 @@ def compute_loss(
     reference = images[0:1].expand(target.shape[0], -1, -1, -1, -1)
     warped = transformer(reference, output.displacement_voxel[1:])
     backward_warped = transformer(images[1:], inverse_output.displacement_voxel[1:])
-    forward_image_loss = ncc(target, warped)
-    backward_image_loss = ncc(reference, backward_warped)
+    forward_image_loss = similarity(target, warped)
+    backward_image_loss = similarity(reference, backward_warped)
     backward_weight = float(loss_cfg.get("lambda_backward", 1.0))
     image_loss = (
         forward_image_loss + backward_weight * backward_image_loss
     ) / (1.0 + backward_weight)
+    gradient_weight = float(loss_cfg.get("lambda_gradient", 0.0))
+    if gradient_weight > 0.0:
+        forward_gradient_loss = gradient_loss(target, warped)
+        backward_gradient_loss = gradient_loss(reference, backward_warped)
+        structural_loss = (
+            forward_gradient_loss + backward_weight * backward_gradient_loss
+        ) / (1.0 + backward_weight)
+    else:
+        forward_gradient_loss = image_loss.new_zeros(())
+        backward_gradient_loss = image_loss.new_zeros(())
+        structural_loss = image_loss.new_zeros(())
     (
         jdet_loss,
         jdet_lower_loss,
@@ -122,6 +158,7 @@ def compute_loss(
     )
     total = (
         image_loss
+        + gradient_weight * structural_loss
         + float(loss_cfg["lambda_j"]) * jdet_loss
         + float(loss_cfg["lambda_v"]) * magnitude_loss
         + float(loss_cfg["lambda_df"]) * deformation_smoothness
@@ -133,6 +170,9 @@ def compute_loss(
         "image": image_loss,
         "image_forward": forward_image_loss,
         "image_backward": backward_image_loss,
+        "gradient": structural_loss,
+        "gradient_forward": forward_gradient_loss,
+        "gradient_backward": backward_gradient_loss,
         "jdet": jdet_loss,
         "jdet_lower": jdet_lower_loss,
         "jdet_upper": jdet_upper_loss,
@@ -180,7 +220,8 @@ def fit_sequence(
         weight_decay=float(optim_cfg.get("weight_decay", 0.0)),
     )
     image_shape = as_tuple_int(cfg["model"]["image_shape"], name="image_shape")
-    ncc = LocalNCC3D(win=int(cfg["loss"]["ncc_win"])).to(device)
+    similarity = build_similarity_loss(cfg["loss"], device)
+    gradient_loss = GradientOrientationLoss3D().to(device)
     transformer = SpatialTransformer3D(image_shape).to(device)
     epochs = int(optim_cfg["epochs_per_sequence"])
     selection_tail = min(int(optim_cfg.get("selection_tail", 50)), epochs)
@@ -207,7 +248,8 @@ def fit_sequence(
             model,
             images,
             times,
-            ncc=ncc,
+            similarity=similarity,
+            gradient_loss=gradient_loss,
             transformer=transformer,
             loss_cfg=cfg["loss"],
         )
@@ -261,6 +303,73 @@ def fit_sequence(
             )
             break
 
+    lbfgs_iterations = int(optim_cfg.get("lbfgs_iterations", 0))
+    best_stage = "adam"
+    if lbfgs_iterations > 0:
+        if best_state is None:
+            raise RuntimeError("Adam did not produce a state for LBFGS refinement")
+        model.load_state_dict(best_state, strict=True)
+        lbfgs = torch.optim.LBFGS(
+            model.parameters(),
+            lr=float(optim_cfg.get("lbfgs_lr", 0.5)),
+            max_iter=lbfgs_iterations,
+            max_eval=int(optim_cfg.get("lbfgs_max_eval", lbfgs_iterations * 2)),
+            history_size=int(optim_cfg.get("lbfgs_history_size", 20)),
+            tolerance_grad=float(optim_cfg.get("lbfgs_tolerance_grad", 1.0e-7)),
+            tolerance_change=float(optim_cfg.get("lbfgs_tolerance_change", 1.0e-9)),
+            line_search_fn="strong_wolfe",
+        )
+        closure_calls = 0
+
+        def closure() -> torch.Tensor:
+            nonlocal closure_calls
+            lbfgs.zero_grad(set_to_none=True)
+            closure_loss, _, _, _, _, _ = compute_loss(
+                model,
+                images,
+                times,
+                similarity=similarity,
+                gradient_loss=gradient_loss,
+                transformer=transformer,
+                loss_cfg=cfg["loss"],
+            )
+            closure_loss.backward()
+            closure_calls += 1
+            return closure_loss
+
+        lbfgs.step(closure)
+        model.eval()
+        with torch.no_grad():
+            refined_loss, refined_terms, _, _, _, _ = compute_loss(
+                model,
+                images,
+                times,
+                similarity=similarity,
+                gradient_loss=gradient_loss,
+                transformer=transformer,
+                loss_cfg=cfg["loss"],
+            )
+        refined_metrics = detached_metrics(refined_terms)
+        print(
+            json.dumps(
+                {
+                    "sequence_id": batch["sequence_id"],
+                    "stage": "lbfgs",
+                    "closure_calls": closure_calls,
+                    **refined_metrics,
+                }
+            )
+        )
+        refined_score = float(refined_loss.detach().cpu())
+        if refined_score < best_score:
+            best_score = refined_score
+            best_metrics = refined_metrics
+            best_state = {
+                key: value.detach().cpu().clone()
+                for key, value in model.state_dict().items()
+            }
+            best_stage = "lbfgs"
+
     if best_state is None or best_metrics is None:
         raise RuntimeError("NODEO did not produce a selected state")
     model.load_state_dict(best_state, strict=True)
@@ -270,7 +379,8 @@ def fit_sequence(
             model,
             images,
             times,
-            ncc=ncc,
+            similarity=similarity,
+            gradient_loss=gradient_loss,
             transformer=transformer,
             loss_cfg=cfg["loss"],
         )
@@ -309,6 +419,7 @@ def fit_sequence(
             "model_state": best_state,
             "config": cfg,
             "best_epoch": best_epoch,
+            "best_stage": best_stage,
             "metrics": final_metrics,
         },
         output_path,
@@ -320,6 +431,7 @@ def fit_sequence(
         "source_path": batch["source_path"],
         "output": str(output_path),
         "best_epoch": best_epoch,
+        "best_stage": best_stage,
         "runtime_seconds": time.monotonic() - started,
         "metrics": final_metrics,
     }
