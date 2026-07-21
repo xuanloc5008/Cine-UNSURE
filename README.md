@@ -10,9 +10,9 @@ cropped ROI cine sequence
   -> mean deformation phi_bar[k]
   -> predicted frame warp(I[0], phi_bar[k])
   -> U_ambiguity[k] from the smoothed squared registration residual
-  -> per-sequence MSE fit of SDE-CVGRU mean dynamics
+  -> per-sequence masked + full-trajectory MSE fit of SDE-CVGRU mean dynamics
   -> frozen-network analytical Jacobian propagation
-  -> ambiguity covariance + SDE process covariance
+  -> ambiguity + SDE process + NODEO model covariance
   -> voxel-wise deformation variance and uncalibrated EF prediction band
 ```
 
@@ -24,22 +24,30 @@ checkpoint is used.
 For frame `k`:
 
 ```text
-r[k] = (I[k] - warp(I[0], phi_bar[k]))^2
-U_ambiguity[k] = normalize_per_frame(GaussianSmooth(r[k]))
+r[k] = GaussianSmooth((I[k] - warp(I[0], phi_bar[k]))^2)
+s = quantile({r[k, x] over the complete sequence}, q)
+U_ambiguity[k] = clip(r[k] / max(s, epsilon), 0, c)
 ```
 
-`U_ambiguity[0]` is zero. The map is used directly as an isotropic voxel-space
-covariance proxy and projected into the NODEO motion basis. After the
-per-sequence SDE-CVGRU has been fitted only with masked-frame MSE, analytical
-Jacobians propagate two separate streams:
+`U_ambiguity[0]` is zero. A single sequence-level scale preserves relative
+ambiguity amplitudes between frames. The map is used as an isotropic
+voxel-space covariance proxy and projected into the NODEO motion basis. The
+SDE-CVGRU mean is fitted with masked-frame prediction MSE plus full-trajectory
+reconstruction MSE. Frozen-network analytical Jacobians then propagate two
+dynamical streams, while a third NODEO term is estimated from late optimization
+checkpoints:
 
 ```text
-R_phi_total[k] = R_phi_ambiguity[k] + R_phi_process[k]
+R_phi_total[k] = R_phi_ambiguity[k]
+               + R_phi_process[k]
+               + R_phi_NODEO-model[k]
 ```
 
-The final mean deformation remains exactly the NODEO result. The uncertainty
-is registration ambiguity plus model-dynamics process uncertainty; it is not
-scanner-noise covariance, parameter-posterior uncertainty, or a calibrated
+The final mean deformation remains exactly the NODEO result. NODEO uses a
+periodic time encoding, a two-sided Jacobian determinant penalty, and a soft
+end-of-cycle closure loss. `R_phi_NODEO-model` is a practical late-checkpoint
+ensemble proxy for local optimization/model variability. It is not an exact
+Bayesian parameter posterior, scanner-noise covariance, or a calibrated
 coverage guarantee.
 
 ## Setup
@@ -131,6 +139,9 @@ ambiguity_map
 deformation_variance_diag
 ambiguity_deformation_variance_diag
 process_deformation_variance_diag
+nodeo_model_deformation_variance_diag
+ambiguity_frame_scale
+ambiguity_sequence_scale
 motion_covariance_factor
 ambiguity_motion_covariance_factor
 process_motion_covariance_factor

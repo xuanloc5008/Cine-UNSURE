@@ -138,7 +138,10 @@ def residual_ambiguity(
     kernel_size: int,
     sigma: float,
     epsilon: float,
-) -> tuple[Tensor, Tensor]:
+    normalization: str,
+    quantile: float,
+    clip: float,
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     residual_squared = (images - predicted_frames).square().mean(dim=1)
     if mode == "gaussian":
         variance_proxy = gaussian_smooth_ambiguity(
@@ -151,11 +154,26 @@ def residual_ambiguity(
     else:
         raise ValueError("ambiguity mode must be 'none' or 'gaussian'")
     variance_proxy = variance_proxy + float(epsilon)
-    denominator = variance_proxy.flatten(1).amax(dim=1).clamp_min(float(epsilon))
-    ambiguity = variance_proxy / denominator[:, None, None, None]
+    if not 0.0 < quantile <= 1.0:
+        raise ValueError("ambiguity quantile must be in (0, 1]")
+    frame_scale = torch.quantile(variance_proxy.flatten(1), quantile, dim=1)
+    if normalization == "frame_max":
+        denominator = variance_proxy.flatten(1).amax(dim=1).clamp_min(float(epsilon))
+        ambiguity = variance_proxy / denominator[:, None, None, None]
+        sequence_scale = denominator.mean()
+        relative_frame_scale = denominator / sequence_scale.clamp_min(float(epsilon))
+    elif normalization == "sequence_quantile":
+        sequence_values = variance_proxy[1:].reshape(-1) if len(variance_proxy) > 1 else variance_proxy.reshape(-1)
+        sequence_scale = torch.quantile(sequence_values, quantile).clamp_min(float(epsilon))
+        ambiguity = variance_proxy / sequence_scale
+        relative_frame_scale = frame_scale / sequence_scale
+    else:
+        raise ValueError("ambiguity normalization must be 'frame_max' or 'sequence_quantile'")
+    ambiguity = ambiguity.clamp(0.0, float(clip))
     # I0 is mapped to itself and is treated as a deterministic initial state.
     ambiguity[0].zero_()
-    return residual_squared, ambiguity.clamp(0.0, 1.0)
+    relative_frame_scale[0] = 0.0
+    return residual_squared, ambiguity, relative_frame_scale, sequence_scale
 
 
 def fit_sequence(
@@ -201,19 +219,25 @@ def fit_sequence(
             f"{tuple(nodeo_displacement.shape[-3:])}"
         )
 
+    ambiguity_normalization = str(ambiguity_cfg.get("normalization", "sequence_quantile"))
+    ambiguity_quantile = float(ambiguity_cfg.get("quantile", 0.95))
+    ambiguity_clip = float(ambiguity_cfg.get("clip", 4.0))
     transformer = SpatialTransformer3D(tuple(int(v) for v in images.shape[-3:])).to(device)
     with torch.no_grad():
         nodeo_predicted_frames = transformer(
             images[0:1].expand(length, -1, -1, -1, -1),
             nodeo_displacement,
         )
-        residual_squared, ambiguity_map = residual_ambiguity(
+        residual_squared, ambiguity_map, ambiguity_frame_scale, ambiguity_sequence_scale = residual_ambiguity(
             images,
             nodeo_predicted_frames,
             mode=str(ambiguity_cfg.get("mode", "gaussian")),
             kernel_size=int(ambiguity_cfg.get("kernel_size", 5)),
             sigma=float(ambiguity_cfg.get("sigma", 1.0)),
             epsilon=float(ambiguity_cfg.get("epsilon", 1.0e-8)),
+            normalization=ambiguity_normalization,
+            quantile=ambiguity_quantile,
+            clip=ambiguity_clip,
         )
 
     motion_mean, motion_basis, motion_code = fit_linear_basis(
@@ -240,6 +264,7 @@ def fit_sequence(
         mlp_hidden_dim=int(model_cfg["mlp_hidden_dim"]),
         mlp_layers=int(model_cfg["mlp_layers"]),
         integration_steps=int(model_cfg["integration_steps"]),
+        periodic_time=bool(model_cfg.get("periodic_time", True)),
     ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -270,7 +295,19 @@ def fit_sequence(
         output = model.forward_mean(times=times, observation=cvgru_input, mask=observed)
         masked_mse = torch.nn.functional.mse_loss(output.motion_code[target_mask], motion_code[target_mask])
         reference_mse = torch.nn.functional.mse_loss(output.motion_code[0], motion_code[0])
-        loss = masked_mse + reference_mse
+        full_output = model.forward_mean(
+            times=times,
+            observation=cvgru_input,
+            mask=torch.ones(length, dtype=torch.bool, device=device),
+        )
+        reconstruction_mse = torch.nn.functional.mse_loss(
+            full_output.motion_code[1:], motion_code[1:]
+        )
+        loss = (
+            masked_mse
+            + reference_mse
+            + float(fit_cfg.get("lambda_reconstruction", 1.0)) * reconstruction_mse
+        )
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), float(fit_cfg["grad_clip"]))
@@ -383,9 +420,32 @@ def fit_sequence(
 
     ambiguity_voxel_variance = voxel_variance_from_factor(ambiguity_motion_factor)
     process_voxel_variance = voxel_variance_from_factor(process_motion_factor)
+    nodeo_model_voxel_variance = nodeo_payload.get("model_uncertainty_variance_diag")
+    if nodeo_model_voxel_variance is None:
+        nodeo_model_voxel_variance = torch.zeros_like(nodeo_displacement)
+        nodeo_model_uncertainty_method = "missing_zero_fallback"
+    else:
+        nodeo_model_voxel_variance = nodeo_model_voxel_variance.float().to(device)  # type: ignore[union-attr]
+        if nodeo_model_voxel_variance.shape != nodeo_displacement.shape:
+            raise ValueError(
+                "NODEO model uncertainty shape mismatch: "
+                f"{tuple(nodeo_model_voxel_variance.shape)} vs {tuple(nodeo_displacement.shape)}"
+            )
+        nodeo_model_uncertainty_method = str(
+            nodeo_payload.get("model_uncertainty_method", "nodeo_model_uncertainty")
+        )
+    nodeo_model_voxel_variance = nodeo_model_voxel_variance.clamp_min(0.0)
+    nodeo_model_voxel_variance = nodeo_model_voxel_variance * float(
+        covariance_cfg.get("nodeo_model_scale", 1.0)
+    )
+    nodeo_model_voxel_variance[0].zero_()
     # Report the decomposition exactly. Separate PSD stabilization of the two
     # covariance streams can otherwise introduce a small diagonal mismatch.
-    voxel_variance = ambiguity_voxel_variance + process_voxel_variance
+    voxel_variance = (
+        ambiguity_voxel_variance
+        + process_voxel_variance
+        + nodeo_model_voxel_variance
+    )
 
     payload: dict[str, object] = {
         "method": "nodeo_residual_ambiguity_posthoc_sde_cvgru",
@@ -405,13 +465,18 @@ def fit_sequence(
         "sde_reconstructed_displacement": sde_reconstructed_displacement.detach().cpu().half(),
         "residual_squared": residual_squared.detach().cpu().float(),
         "ambiguity_map": ambiguity_map.detach().cpu().float(),
+        "ambiguity_frame_scale": ambiguity_frame_scale.detach().cpu().float(),
+        "ambiguity_sequence_scale": float(ambiguity_sequence_scale),
         "ambiguity_definition": (
-            "U_ambiguity = normalize_frame(G_sigma * "
-            "(I_t - warp(I_0, phi_NODEO_t))^2); U_ambiguity[0] = 0"
+            f"normalization={ambiguity_normalization}; quantile={ambiguity_quantile}; "
+            f"clip={ambiguity_clip}; U_ambiguity[0] = 0"
         ),
         "deformation_variance_diag": voxel_variance.detach().cpu().float(),
+        "deformation_covariance_diag": voxel_variance.detach().cpu().float(),
         "ambiguity_deformation_variance_diag": ambiguity_voxel_variance.detach().cpu().float(),
         "process_deformation_variance_diag": process_voxel_variance.detach().cpu().float(),
+        "nodeo_model_deformation_variance_diag": nodeo_model_voxel_variance.detach().cpu().float(),
+        "nodeo_model_uncertainty_method": nodeo_model_uncertainty_method,
         "motion_basis": motion_basis.detach().cpu().float(),
         "motion_covariance_factor": motion_factor.detach().cpu().float(),
         "ambiguity_motion_covariance_factor": ambiguity_motion_factor.detach().cpu().float(),
@@ -428,13 +493,13 @@ def fit_sequence(
         "best_iteration": best_iteration,
         "validation_frame_indices": torch.nonzero(held_out).flatten().cpu(),
         "covariance_definition": (
-            "L_phi[k] = motion_basis @ motion_covariance_factor[k]; "
-            "R_phi[k] = L_phi[k] @ L_phi[k].T"
+            "R_phi[k] = R_ambiguity[k] + R_process[k] + "
+            "diag(nodeo_model_deformation_variance_diag[k])"
         ),
         "uncertainty_training": (
-            "post-hoc only; SDE-CVGRU weights optimized with masked-frame MSE, "
-            "U_ambiguity enters analytical covariance directly, and the final "
-            "mean trajectory remains locked to NODEO"
+            "post-hoc only; SDE-CVGRU weights optimized with masked-frame and "
+            "full-trajectory reconstruction MSE, U_ambiguity enters analytical "
+            "covariance directly, and the final mean remains locked to NODEO"
         ),
     }
     metrics: dict[str, float | int | str] = {
@@ -457,7 +522,9 @@ def fit_sequence(
         "mean_deformation_variance": float(voxel_variance.mean()),
         "mean_ambiguity_deformation_variance": float(ambiguity_voxel_variance.mean()),
         "mean_process_deformation_variance": float(process_voxel_variance.mean()),
+        "mean_nodeo_model_deformation_variance": float(nodeo_model_voxel_variance.mean()),
         "mean_ambiguity": float(ambiguity_map.mean()),
+        "ambiguity_sequence_scale": float(ambiguity_sequence_scale),
     }
     return payload, metrics
 

@@ -8,22 +8,23 @@ NODEO output: cropped images, time indices, and mean deformation trajectory.
 For every frame, the runner computes:
 
 ```text
-U_ambiguity[k] = normalize_per_frame(
-    GaussianSmooth((I[k] - warp(I[0], phi_NODEO[k]))^2)
-)
+r[k] = GaussianSmooth((I[k] - warp(I[0], phi_NODEO[k]))^2)
+s = quantile({r[k, x] over the complete sequence}, q)
+U_ambiguity[k] = clip(r[k] / max(s, epsilon), 0, c)
 ```
 
-Frame zero is set to zero ambiguity. `U_ambiguity` is used directly as an
-isotropic voxel covariance proxy, repeated over the three displacement
-channels and projected into the NODEO motion basis. No external observation
-file or learned ambiguity conversion is used.
+Frame zero is set to zero ambiguity. The shared sequence scale preserves
+between-frame amplitude, unlike independent per-frame max normalization.
+`U_ambiguity` is used directly as an isotropic voxel covariance proxy, repeated
+over the three displacement channels and projected into the NODEO motion
+basis. No external observation file or learned ambiguity conversion is used.
 
 ## Mean fitting
 
 NODEO displacement is represented in a low-rank motion basis. A small
 continuous-time hidden model and CVGRU are fitted separately for each sequence.
-Random target frames are hidden and the only optimization objective is MSE
-between predicted and NODEO motion codes at those frames.
+Random target frames are hidden. Optimization uses their prediction MSE plus a
+weighted full-trajectory reconstruction MSE, both against NODEO motion codes.
 
 No covariance, NLL, coverage, clinical target, or segmentation target enters
 the fit. The final reported mean remains locked to NODEO; the fitted model is
@@ -32,13 +33,15 @@ used for sensitivity and covariance propagation.
 ## Post-hoc uncertainty
 
 After selecting the lowest held-out-frame MSE, all weights are frozen. The
-runner propagates two covariance streams:
+runner propagates two covariance streams and adds one NODEO model term:
 
 1. Ambiguity covariance from `U_ambiguity`, through CVGRU observation
    Jacobians and the deformation decoder.
 2. Process covariance from SDE dynamics, through drift and update Jacobians.
+3. NODEO model variance estimated from a late-checkpoint displacement ensemble.
 
-The total is their sum. Compact low-rank factors are stored as:
+The total is their sum. Compact low-rank factors are stored for the first two
+terms, while the NODEO model term is stored as an exact voxel-wise diagonal:
 
 ```text
 L_phi[k] = motion_basis @ motion_covariance_factor[k]
@@ -46,7 +49,8 @@ R_phi[k] = L_phi[k] @ L_phi[k].T
 ```
 
 Separate ambiguity/process factors and exact voxel-wise diagonal components
-are also saved.
+are also saved. The late-checkpoint term is a local model-variability proxy,
+not an exact Bayesian posterior.
 
 ## Run
 

@@ -157,6 +157,9 @@ def main() -> None:
     cov_diag_all = item.get("deformation_covariance_diag")
     if cov_diag_all is not None:
         cov_diag_all = cov_diag_all.float().clamp_min(0)
+    nodeo_model_cov_diag_all = item.get("nodeo_model_deformation_variance_diag")
+    if nodeo_model_cov_diag_all is not None:
+        nodeo_model_cov_diag_all = nodeo_model_cov_diag_all.float().clamp_min(0)
     cov_factor_all = item.get("deformation_covariance_factor")
     if cov_factor_all is not None:
         cov_factor_all = cov_factor_all.float()
@@ -204,9 +207,32 @@ def main() -> None:
     strain_rows: list[dict[str, float]] = []
     strain_var_rows: list[dict[str, float | None]] = []
 
+    def propagated_variance(
+        value: torch.Tensor,
+        displacement: torch.Tensor,
+        factor: torch.Tensor | None,
+        covariance_diag: torch.Tensor | None,
+        nodeo_model_covariance_diag: torch.Tensor | None,
+    ) -> float | None:
+        if factor is None:
+            return variance_to_float(delta_variance_diag(value, displacement, covariance_diag))
+        variance = delta_variance_factor(value, displacement, factor)
+        if nodeo_model_covariance_diag is not None:
+            model_variance = delta_variance_diag(
+                value, displacement, nodeo_model_covariance_diag
+            )
+            if model_variance is not None:
+                variance = variance + model_variance
+        return variance_to_float(variance)
+
     for idx in range(displacement_all.shape[0]):
         disp = displacement_all[idx].detach().clone().requires_grad_(True)
         cov = None if cov_diag_all is None else cov_diag_all[idx]
+        nodeo_model_cov = (
+            None
+            if nodeo_model_cov_diag_all is None
+            else nodeo_model_cov_diag_all[idx]
+        )
         factor = None if cov_factor_all is None else cov_factor_all[idx]
         if motion_basis is not None and motion_factor_all is not None:
             factor = motion_basis @ motion_factor_all[idx]
@@ -214,12 +240,12 @@ def main() -> None:
         wm = mean_wall_motion_mm(mask, disp, spacing_mm=spacing_mm)
         strains = mean_green_lagrange_strain(mask, disp, spacing_mm=spacing_mm)
         volumes.append(float(vol.detach()))
-        volume_var.append(variance_to_float(delta_variance_factor(vol, disp, factor) if factor is not None else delta_variance_diag(vol, disp, cov)))
+        volume_var.append(propagated_variance(vol, disp, factor, cov, nodeo_model_cov))
         wall_motion.append(float(wm.detach()))
-        wall_motion_var.append(variance_to_float(delta_variance_factor(wm, disp, factor) if factor is not None else delta_variance_diag(wm, disp, cov)))
+        wall_motion_var.append(propagated_variance(wm, disp, factor, cov, nodeo_model_cov))
         strain_rows.append({key: float(value.detach()) for key, value in strains.items()})
         strain_var_rows.append({
-            key: variance_to_float(delta_variance_factor(value, disp, factor) if factor is not None else delta_variance_diag(value, disp, cov))
+            key: propagated_variance(value, disp, factor, cov, nodeo_model_cov)
             for key, value in strains.items()
         })
 

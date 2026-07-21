@@ -13,30 +13,36 @@ ambiguity:
   kernel_size: 5
   sigma: 1.0
   epsilon: 0.00000001
+  normalization: sequence_quantile
+  quantile: 0.95
+  clip: 4.0
   variance_scale: 1.0
 
 model:
-  motion_rank: 8
-  hidden_dim: 16
-  mlp_hidden_dim: 64
+  motion_rank: 16
+  hidden_dim: 32
+  mlp_hidden_dim: 128
   mlp_layers: 3
-  integration_steps: 1
+  integration_steps: 4
+  periodic_time: true
 
 fit:
-  iterations: 1000
+  iterations: 2000
   lr: 0.001
   weight_decay: 0.0001
   grad_clip: 1.0
-  mask_fraction: 0.35
+  mask_fraction: 0.25
+  lambda_reconstruction: 1.0
   validation_fraction: 0.20
   validate_every: 20
-  patience: 20
+  patience: 30
   min_delta: 0.000001
 
 covariance:
   init_covariance: 0.000001
   floor: 0.00000001
   process_shrinkage: 0.10
+  nodeo_model_scale: 1.0
 
 output:
   run_dir: runs/acdc/sde_sequence_posthoc

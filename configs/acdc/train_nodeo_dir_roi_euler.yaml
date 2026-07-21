@@ -15,15 +15,24 @@ model:
   smoothing_window: 11
   smoothing_sigma: 2.0
   smoothing_passes: 1
+  time_encoding: periodic
   solver: euler
   step_size: 0.05
 
 loss:
   ncc_win: 9
   minimum_jacobian: 0.5
+  maximum_jacobian: 4.0
   lambda_j: 2.5
   lambda_v: 0.00005
   lambda_df: 0.02
+  lambda_cycle: 0.05
+
+uncertainty:
+  method: late_checkpoint_ensemble
+  model_uncertainty_tail: 100
+  model_uncertainty_stride: 5
+  model_uncertainty_scale: 1.0
 
 optim:
   epochs_per_sequence: 500

@@ -65,13 +65,19 @@ class NODEODIRVelocityNet(nn.Module):
         smoothing_window: int = 15,
         smoothing_sigma: float = 3.0,
         smoothing_passes: int = 1,
+        time_encoding: str = "scalar",
     ) -> None:
         super().__init__()
         self.image_shape = tuple(int(v) for v in image_shape)
         self.output_downsamples = int(output_downsamples)
         self.smoothing_passes = int(smoothing_passes)
+        self.time_encoding = str(time_encoding).lower()
+        if self.time_encoding not in {"scalar", "periodic"}:
+            raise ValueError("time_encoding must be 'scalar' or 'periodic'")
+        time_channels = 1 if self.time_encoding == "scalar" else 2
+        input_channels = 3 + time_channels
         layers: list[nn.Module] = []
-        in_channels = 4
+        in_channels = input_channels
         for _ in range(int(encoder_depth)):
             layers.append(
                 nn.Conv3d(
@@ -87,7 +93,7 @@ class NODEODIRVelocityNet(nn.Module):
             in_channels = int(encoder_channels)
         self.encoder = nn.Sequential(*layers)
         with torch.no_grad():
-            dummy = torch.zeros(1, 4, *self.image_shape)
+            dummy = torch.zeros(1, input_channels, *self.image_shape)
             dummy = F.interpolate(dummy, scale_factor=0.5, mode="trilinear", align_corners=True)
             encoded_features = int(self.encoder(dummy).numel())
         self.fc1 = nn.Linear(encoded_features, int(bottleneck_dim))
@@ -103,8 +109,18 @@ class NODEODIRVelocityNet(nn.Module):
 
     def forward(self, phi_normalized: Tensor, t: Tensor) -> Tensor:
         batch = phi_normalized.shape[0]
-        time_channel = t.reshape(1, 1, 1, 1, 1).to(phi_normalized).expand(batch, 1, *self.image_shape)
-        features = torch.cat([phi_normalized, time_channel], dim=1)
+        time = t.reshape(1).to(phi_normalized)
+        if self.time_encoding == "periodic":
+            time_values = torch.stack(
+                (torch.sin(2.0 * math.pi * time), torch.cos(2.0 * math.pi * time)),
+                dim=1,
+            )
+        else:
+            time_values = time[:, None]
+        time_channels = time_values[:, :, None, None, None].expand(
+            batch, -1, *self.image_shape
+        )
+        features = torch.cat([phi_normalized, time_channels], dim=1)
         features = F.interpolate(features, scale_factor=0.5, mode="trilinear", align_corners=True)
         features = self.encoder(features).flatten(1)
         features = F.relu(self.fc1(features))

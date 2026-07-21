@@ -109,14 +109,29 @@ def negative_jacobian_loss(phi: Tensor, *, margin: float = 0.5) -> Tensor:
     return F.relu(-(jacobian_det_3d(phi) - float(margin))).pow(2).mean()
 
 
-def nodeo_jacobian_metrics(phi: Tensor, *, minimum: float = 0.5) -> tuple[Tensor, Tensor, Tensor]:
-    """NODEO-DIR Jacobian penalty and regularity statistics."""
+def nodeo_jacobian_metrics(
+    phi: Tensor,
+    *,
+    minimum: float = 0.5,
+    maximum: float = 4.0,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """Two-sided NODEO Jacobian penalty and regularity statistics."""
 
     determinant = jacobian_det_3d(phi)
-    penalty = F.relu(float(minimum) - determinant).pow(2).mean()
+    lower_penalty = F.relu(float(minimum) - determinant).pow(2).mean()
+    upper_penalty = F.relu(determinant - float(maximum)).pow(2).mean()
+    penalty = lower_penalty + upper_penalty
     fold_fraction = (determinant <= 0.0).float().mean()
     volume_deviation = (determinant - 1.0).abs().mean()
-    return penalty, fold_fraction, volume_deviation
+    return (
+        penalty,
+        lower_penalty,
+        upper_penalty,
+        fold_fraction,
+        volume_deviation,
+        determinant.min(),
+        determinant.max(),
+    )
 
 
 def smoothness_loss(flow: Tensor) -> Tensor:

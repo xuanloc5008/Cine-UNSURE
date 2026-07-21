@@ -120,19 +120,29 @@ class PerSequencePostHocSDERNN(nn.Module):
         mlp_hidden_dim: int,
         mlp_layers: int,
         integration_steps: int,
+        periodic_time: bool = True,
     ) -> None:
         super().__init__()
         self.observation_dim = int(observation_dim)
         self.motion_dim = int(motion_dim)
         self.hidden_dim = int(hidden_dim)
         self.integration_steps = max(int(integration_steps), 1)
-        self.drift = MLP(hidden_dim + 1, mlp_hidden_dim, hidden_dim, mlp_layers)
+        self.periodic_time = bool(periodic_time)
+        time_dim = 2 if self.periodic_time else 1
+        self.drift = MLP(hidden_dim + time_dim, mlp_hidden_dim, hidden_dim, mlp_layers)
         self.cvgru = nn.GRUCell(observation_dim, hidden_dim)
         self.decoder = MLP(hidden_dim, mlp_hidden_dim, motion_dim, mlp_layers)
         self.h0 = nn.Parameter(torch.zeros(hidden_dim))
 
     def drift_value(self, hidden: Tensor, time: Tensor) -> Tensor:
-        return self.drift(torch.cat((hidden, time.reshape(1).to(hidden))))
+        time = time.reshape(1).to(hidden)
+        if self.periodic_time:
+            time_features = torch.cat(
+                (torch.sin(2.0 * torch.pi * time), torch.cos(2.0 * torch.pi * time))
+            )
+        else:
+            time_features = time
+        return self.drift(torch.cat((hidden, time_features)))
 
     def propagate_mean(self, hidden: Tensor, time0: Tensor, time1: Tensor) -> Tensor:
         total_dt = (time1 - time0).clamp_min(1.0e-6)

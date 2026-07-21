@@ -17,23 +17,25 @@ Both options perform these operations for the selected patient:
 3. Compute registration ambiguity directly from the NODEO residual:
 
    ```text
-   residual[k] = (I[k] - warp(I[0], phi_bar[k]))^2
-   U_ambiguity[k] = normalize_per_frame(GaussianSmooth(residual[k]))
+   residual[k] = GaussianSmooth((I[k] - warp(I[0], phi_bar[k]))^2)
+   scale = sequence_quantile(residual, q)
+   U_ambiguity[k] = clip(residual[k] / scale, 0, c)
    ```
 
-4. Fit a patient-specific SDE-CVGRU with masked-frame MSE against low-rank
-   NODEO motion codes. No uncertainty term is optimized.
+4. Fit a patient-specific SDE-CVGRU with masked-frame and full-trajectory MSE
+   against low-rank NODEO motion codes. No uncertainty term is optimized.
 5. Freeze the fitted network and propagate `U_ambiguity` analytically through
    the CVGRU and deformation decoder Jacobians.
-6. Add process covariance from the SDE dynamics and retain the NODEO
-   deformation as the final mean trajectory.
+6. Add process covariance from the SDE dynamics and NODEO model variance from
+   its late-checkpoint ensemble. Retain NODEO as the final mean trajectory.
 7. Save predicted frames, voxel-wise deformation variance, and separate
-   ambiguity/process covariance components.
+   ambiguity/process/NODEO-model covariance components.
 8. Read ACDC ED/ES indices and propagate deformation covariance to an
    uncalibrated EF prediction band.
 
 The reported uncertainty is a registration-ambiguity proxy plus SDE process
-uncertainty. It is not scanner-noise covariance or a self-calibrated coverage
+uncertainty and a local NODEO model-variability proxy. It is not scanner-noise
+covariance, an exact Bayesian posterior, or a self-calibrated coverage
 guarantee.
 
 ## Solver selection
@@ -100,6 +102,7 @@ ambiguity_map
 deformation_variance_diag
 ambiguity_deformation_variance_diag
 process_deformation_variance_diag
+nodeo_model_deformation_variance_diag
 motion_basis
 motion_covariance_factor
 ambiguity_motion_covariance_factor
@@ -115,4 +118,5 @@ The diagonal decomposition is exact in the saved output:
 deformation_variance_diag
   = ambiguity_deformation_variance_diag
   + process_deformation_variance_diag
+  + nodeo_model_deformation_variance_diag
 ```

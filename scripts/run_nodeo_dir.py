@@ -58,6 +58,7 @@ def build_model(cfg: dict, device: torch.device) -> NODEODIRModel:
         smoothing_window=int(model_cfg["smoothing_window"]),
         smoothing_sigma=float(model_cfg["smoothing_sigma"]),
         smoothing_passes=int(model_cfg["smoothing_passes"]),
+        time_encoding=str(model_cfg.get("time_encoding", "scalar")),
     ).to(device)
 
 
@@ -75,25 +76,43 @@ def compute_loss(
     reference = images[0:1].expand(target.shape[0], -1, -1, -1, -1)
     warped = transformer(reference, output.displacement_voxel[1:])
     image_loss = ncc(target, warped)
-    jdet_loss, fold_fraction, volume_deviation = nodeo_jacobian_metrics(
-        output.phi_voxel[1:], minimum=float(loss_cfg["minimum_jacobian"])
+    (
+        jdet_loss,
+        jdet_lower_loss,
+        jdet_upper_loss,
+        fold_fraction,
+        volume_deviation,
+        jacobian_minimum,
+        jacobian_maximum,
+    ) = nodeo_jacobian_metrics(
+        output.phi_voxel[1:],
+        minimum=float(loss_cfg["minimum_jacobian"]),
+        maximum=float(loss_cfg.get("maximum_jacobian", 4.0)),
     )
     magnitude_loss = velocity_magnitude_loss(output.velocity_normalized[1:, None])
     deformation_smoothness = smoothness_loss(output.displacement_voxel[1:])
+    cycle_loss = output.displacement_voxel[-1].square().mean()
     total = (
         image_loss
         + float(loss_cfg["lambda_j"]) * jdet_loss
         + float(loss_cfg["lambda_v"]) * magnitude_loss
         + float(loss_cfg["lambda_df"]) * deformation_smoothness
+        + float(loss_cfg.get("lambda_cycle", 0.0)) * cycle_loss
     )
     terms = {
         "loss": total,
         "image": image_loss,
         "jdet": jdet_loss,
+        "jdet_lower": jdet_lower_loss,
+        "jdet_upper": jdet_upper_loss,
         "mag": magnitude_loss,
         "smooth": deformation_smoothness,
+        "cycle": cycle_loss,
+        "cycle_displacement_rms": cycle_loss.sqrt(),
         "fold_fraction": fold_fraction,
         "abs_jdet_minus_one": volume_deviation,
+        "jacobian_min": jacobian_minimum,
+        "jacobian_max": jacobian_maximum,
     }
     return total, terms, output, warped
 
@@ -113,6 +132,14 @@ def fit_sequence(
     times = batch["times"].to(device, non_blocking=True)
     model = build_model(cfg, device)
     optim_cfg = cfg["optim"]
+    uncertainty_cfg = cfg.get("uncertainty", {})
+    uncertainty_method = str(
+        uncertainty_cfg.get("method", "late_checkpoint_ensemble")
+    )
+    if uncertainty_method != "late_checkpoint_ensemble":
+        raise ValueError(
+            "uncertainty.method must be 'late_checkpoint_ensemble'"
+        )
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=float(optim_cfg["lr"]),
@@ -131,11 +158,19 @@ def fit_sequence(
     best_epoch = 0
     best_state: dict[str, torch.Tensor] | None = None
     best_metrics: dict[str, float] | None = None
+    uncertainty_tail = min(
+        int(uncertainty_cfg.get("model_uncertainty_tail", selection_tail)), epochs
+    )
+    uncertainty_stride = max(int(uncertainty_cfg.get("model_uncertainty_stride", 5)), 1)
+    uncertainty_scale = float(uncertainty_cfg.get("model_uncertainty_scale", 1.0))
+    displacement_sample_count = 0
+    displacement_sample_mean: torch.Tensor | None = None
+    displacement_sample_m2: torch.Tensor | None = None
     started = time.monotonic()
 
     for epoch in range(1, epochs + 1):
         model.train()
-        loss, terms, _, _ = compute_loss(
+        loss, terms, epoch_output, _ = compute_loss(
             model,
             images,
             times,
@@ -145,7 +180,6 @@ def fit_sequence(
         )
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
-        optimizer.step()
         metrics = detached_metrics(terms)
         if epoch > epochs - selection_tail:
             selection_score = metrics["loss"]
@@ -154,6 +188,19 @@ def fit_sequence(
                 best_epoch = epoch
                 best_metrics = metrics
                 best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
+        uncertainty_start = epochs - uncertainty_tail + 1
+        if epoch >= uncertainty_start and (epoch - uncertainty_start) % uncertainty_stride == 0:
+            sample = epoch_output.displacement_voxel.detach().cpu().float()
+            displacement_sample_count += 1
+            if displacement_sample_mean is None:
+                displacement_sample_mean = sample.clone()
+                displacement_sample_m2 = torch.zeros_like(sample)
+            else:
+                assert displacement_sample_m2 is not None
+                delta = sample - displacement_sample_mean
+                displacement_sample_mean.add_(delta / float(displacement_sample_count))
+                displacement_sample_m2.add_(delta * (sample - displacement_sample_mean))
+        optimizer.step()
         if epoch == 1 or epoch % int(optim_cfg.get("log_every", 20)) == 0:
             print(
                 json.dumps(
@@ -195,6 +242,17 @@ def fit_sequence(
             loss_cfg=cfg["loss"],
         )
     final_metrics = detached_metrics(final_terms)
+    if displacement_sample_count >= 2:
+        assert displacement_sample_m2 is not None
+        model_uncertainty_variance = (
+            displacement_sample_m2 / float(displacement_sample_count - 1)
+        ) * uncertainty_scale
+    else:
+        model_uncertainty_variance = torch.zeros_like(output.displacement_voxel.detach().cpu())
+        uncertainty_method = "insufficient_samples_zero_fallback"
+    model_uncertainty_variance[0].zero_()
+    final_metrics["mean_nodeo_model_variance"] = float(model_uncertainty_variance.mean())
+    final_metrics["nodeo_model_uncertainty_samples"] = float(displacement_sample_count)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
@@ -209,6 +267,9 @@ def fit_sequence(
             "phi_bar": output.phi_voxel.detach().cpu().half(),
             "displacement": output.displacement_voxel.detach().cpu().half(),
             "velocity": output.velocity_normalized.detach().cpu().half(),
+            "model_uncertainty_variance_diag": model_uncertainty_variance,
+            "model_uncertainty_method": uncertainty_method,
+            "model_uncertainty_samples": displacement_sample_count,
             "model_state": best_state,
             "config": cfg,
             "best_epoch": best_epoch,
