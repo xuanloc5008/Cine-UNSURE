@@ -1,22 +1,21 @@
 seed: 2026
 device: auto
 
-data:
-  h5:
-    train: runs/acdc/latent_train_val.h5
-    val: runs/acdc/latent_train_val.h5
-    test: runs/acdc/latent_test.h5
-  min_length: 3
-  covariance: diag
-
 nodeo:
   summaries:
-    train: runs/acdc/nodeo_dir/train/summary.jsonl
-    val: runs/acdc/nodeo_dir/val/summary.jsonl
-    test: runs/acdc/nodeo_dir/test/summary.jsonl
+    train: runs/acdc/nodeo_dir_dopri5/train/summary.jsonl
+    val: runs/acdc/nodeo_dir_dopri5/val/summary.jsonl
+    test: runs/acdc/nodeo_dir_dopri5/test/summary.jsonl
+
+ambiguity:
+  # U_ambiguity is computed directly from the NODEO registration residual.
+  mode: gaussian
+  kernel_size: 5
+  sigma: 1.0
+  epsilon: 0.00000001
+  variance_scale: 1.0
 
 model:
-  observation_rank: 12
   motion_rank: 8
   hidden_dim: 16
   mlp_hidden_dim: 64

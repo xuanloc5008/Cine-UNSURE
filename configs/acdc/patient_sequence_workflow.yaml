@@ -15,16 +15,6 @@ nodeo:
   # Option 2 reuses the existing Euler test outputs requested for this workflow.
   precomputed_dir: runs/acdc/nodeo_dir_euler/test
 
-observation:
-  score_checkpoint: runs/acdc/cunsure_score/best.pt
-  # false reruns score C-UNSURE and CineMA for every invocation.
-  resume: false
-  configs:
-    train: configs/acdc/infer_cinema_score_train.yaml
-    val: configs/acdc/infer_cinema_score_val.yaml
-    test: configs/acdc/infer_cinema_score_test.yaml
-  compression: lzf
-
 sde:
   config: configs/acdc/run_sde_sequence_posthoc.yaml
 

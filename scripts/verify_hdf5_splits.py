@@ -11,7 +11,7 @@ import h5py
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cunsure_monai3d.config import load_yaml, project_root, resolve_path
+from cardiac_nodeo_uq.config import load_yaml, project_root, resolve_path
 
 
 def decode(value: str | bytes) -> str:
@@ -31,7 +31,7 @@ def dataset_name(source: str) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/prepare_hdf5.yaml")
+    parser.add_argument("--config", default="configs/acdc/prepare_hdf5.yaml")
     args = parser.parse_args()
 
     root = project_root()

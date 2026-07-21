@@ -2,7 +2,7 @@ seed: 2026
 data:
   volume_size: [16, 96, 96]
   roi_h5_files:
-    - processed/acdc/train_cunsure_roi.h5
-    - processed/acdc/val_cunsure_roi.h5
-    - processed/acdc/test_cunsure_roi.h5
+    - processed/acdc/train_roi.h5
+    - processed/acdc/val_roi.h5
+    - processed/acdc/test_roi.h5
   manifest: processed/acdc/nodeo_roi_splits.jsonl

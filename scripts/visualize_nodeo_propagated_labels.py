@@ -17,10 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-from cunsure_monai3d.deformation_data import _load_mask_bbox
-from cunsure_monai3d.label_propagation import propagate_label_probabilities
-from cunsure_monai3d.nodeo_ops import SpatialTransformer3D
-from cunsure_monai3d.preprocess import crop_or_pad_around_bbox
+from cardiac_nodeo_uq.label_propagation import propagate_label_probabilities
+from cardiac_nodeo_uq.nodeo_ops import SpatialTransformer3D
+from cardiac_nodeo_uq.preprocess import crop_or_pad_around_bbox, load_mask_bbox
 from scripts.evaluate_nodeo_anatomy import load_masks_by_time
 
 
@@ -78,7 +77,7 @@ def main() -> None:
     reference_time = raw_times[0]
     if reference_time not in masks_by_time:
         raise ValueError(f"fixed frame has no label; labelled times={sorted(masks_by_time)}")
-    bbox = _load_mask_bbox(
+    bbox = load_mask_bbox(
         source_path, time_axis=-1, margin=(0, 16, 16), enabled=True, require_mask=True
     )
     reference_np = crop_or_pad_around_bbox(masks_by_time[reference_time], bbox, image_shape).astype(np.int16)

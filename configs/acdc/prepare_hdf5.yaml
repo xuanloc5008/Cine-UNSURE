@@ -1,9 +1,9 @@
 seed: 2026
 
 data:
-  train_output: processed/acdc/train_cunsure_roi.h5
-  val_output: processed/acdc/val_cunsure_roi.h5
-  test_output: processed/acdc/test_cunsure_roi.h5
+  train_output: processed/acdc/train_roi.h5
+  val_output: processed/acdc/val_roi.h5
+  test_output: processed/acdc/test_roi.h5
   channels: 1
   volume_size: [16, 96, 96]
   train_limit:

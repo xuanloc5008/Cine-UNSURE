@@ -3,8 +3,19 @@
 __pycache__/
 *.py[cod]
 *$py.class
+.DS_Store
 
 # Processed datasets
 data/processed/
+processed/
+runs/
 *.h5
 *.hdf5
+
+# LaTeX build products
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz

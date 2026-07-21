@@ -14,7 +14,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cunsure_monai3d.config import load_yaml, project_root, resolve_path
+from cardiac_nodeo_uq.config import load_yaml, project_root, resolve_path
 
 
 def portable_source_key(path: str) -> str:
@@ -86,34 +86,6 @@ def write_yaml(path: Path, value: dict[str, object]) -> None:
     path.write_text(yaml.safe_dump(value, sort_keys=False), encoding="utf-8")
 
 
-def validate_score_checkpoint(path_text: str, *, root: Path) -> Path:
-    path = Path(path_text)
-    if path.is_absolute():
-        try:
-            relative = path.resolve().relative_to(root.resolve())
-        except ValueError as error:
-            raise ValueError(
-                "score checkpoint must be inside the project because absolute paths are disabled "
-                "by the inference configuration"
-            ) from error
-        path = root / relative
-    else:
-        path = root / path
-    if not path.exists():
-        raise FileNotFoundError(
-            f"Score C-UNSURE checkpoint not found: {path}\n"
-            "Train it with './run_acdc_workflow.sh train-score', copy an existing "
-            "unsure_ardae_score checkpoint there, or pass --score-checkpoint."
-        )
-    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
-    if checkpoint.get("method") != "unsure_ardae_score":
-        raise ValueError(
-            f"invalid Score C-UNSURE checkpoint method at {path}: "
-            f"{checkpoint.get('method')!r}; expected 'unsure_ardae_score'"
-        )
-    return path
-
-
 def select_manifest_row(
     manifest: Path,
     *,
@@ -138,15 +110,6 @@ def select_manifest_row(
         raise ValueError(f"patient selector is ambiguous: {sources}")
     index, row = matches[0]
     return row, index
-
-
-def assert_contiguous(indices: list[int]) -> None:
-    if not indices:
-        raise ValueError("selected sequence has no H5 frame indices")
-    if indices != list(range(indices[0], indices[0] + len(indices))):
-        raise ValueError(
-            "selected H5 frames are not contiguous; per-patient inference requires a contiguous sequence"
-        )
 
 
 def resolve_nodeo_output(path_text: str, summary_path: Path, root: Path) -> Path | None:
@@ -229,59 +192,6 @@ def run_nodeo_on_demand(
     return output, row
 
 
-def infer_observations(
-    *,
-    root: Path,
-    cfg: dict[str, object],
-    split: str,
-    manifest_row: dict[str, object],
-    work_dir: Path,
-    score_checkpoint: Path,
-) -> Path:
-    base_config = cfg["observation"]["configs"][split]  # type: ignore[index]
-    base_path = resolve_path(base_config, root)
-    assert base_path is not None
-    infer_cfg = load_yaml(base_path)
-    infer_cfg["device"] = cfg.get("device", infer_cfg.get("device", "auto"))
-    infer_cfg["score"]["checkpoint"] = relative_or_absolute(score_checkpoint, root)
-    h5_path = resolve_path(str(manifest_row["h5_path"]), root)
-    assert h5_path is not None
-    indices = [int(value) for value in manifest_row["indices"]]  # type: ignore[union-attr]
-    assert_contiguous(indices)
-    observation_dir = work_dir / "observation_frames"
-    infer_cfg["input"]["h5"] = relative_or_absolute(h5_path, root)
-    infer_cfg["input"]["start_index"] = indices[0]
-    infer_cfg["input"]["limit"] = len(indices)
-    infer_cfg["input"]["resume"] = bool(cfg["observation"].get("resume", False))  # type: ignore[union-attr]
-    infer_cfg["input"]["output_dir"] = relative_or_absolute(observation_dir, root)
-    runtime_cfg = work_dir / "runtime_observation.yaml"
-    write_yaml(runtime_cfg, infer_cfg)
-    run(
-        [
-            sys.executable,
-            "scripts/infer_score_cunsure_cinema_batch.py",
-            "--config",
-            relative_or_absolute(runtime_cfg, root),
-        ],
-        root=root,
-    )
-    latent_h5 = work_dir / "latent_observations.h5"
-    run(
-        [
-            sys.executable,
-            "scripts/package_latent_observations.py",
-            "--input-dir",
-            relative_or_absolute(observation_dir, root),
-            "--output",
-            relative_or_absolute(latent_h5, root),
-            "--compression",
-            str(cfg["observation"].get("compression", "lzf")),  # type: ignore[union-attr]
-        ],
-        root=root,
-    )
-    return latent_h5
-
-
 def write_selected_nodeo_summary(
     *,
     path: Path,
@@ -299,7 +209,6 @@ def fit_sde(
     root: Path,
     cfg: dict[str, object],
     split: str,
-    latent_h5: Path,
     nodeo_summary: Path,
     work_dir: Path,
 ) -> Path:
@@ -307,9 +216,7 @@ def fit_sde(
     assert base_path is not None
     sde_cfg = load_yaml(base_path)
     sde_cfg["device"] = cfg.get("device", sde_cfg.get("device", "auto"))
-    h5_value = relative_or_absolute(latent_h5, root)
     summary_value = relative_or_absolute(nodeo_summary, root)
-    sde_cfg["data"]["h5"] = {name: h5_value for name in ("train", "val", "test")}
     sde_cfg["nodeo"]["summaries"] = {name: summary_value for name in ("train", "val", "test")}
     sde_cfg["output"]["run_dir"] = relative_or_absolute(work_dir / "sde", root)
     runtime_cfg = work_dir / "runtime_sde.yaml"
@@ -422,7 +329,6 @@ def main() -> None:
     parser.add_argument("--option", type=int, choices=(1, 2))
     parser.add_argument("--patient")
     parser.add_argument("--split", choices=("train", "val", "test"))
-    parser.add_argument("--score-checkpoint")
     parser.add_argument("--overwrite-nodeo", action="store_true")
     args = parser.parse_args()
 
@@ -438,11 +344,6 @@ def main() -> None:
     manifest_row, split_index = select_manifest_row(
         manifest, split=split, patient=patient
     )
-    configured_checkpoint = str(
-        args.score_checkpoint
-        or cfg["observation"].get("score_checkpoint", "runs/acdc/cunsure_score/best.pt")
-    )
-    score_checkpoint = validate_score_checkpoint(configured_checkpoint, root=root)
     patient_name = Path(str(manifest_row["source_path"])).parent.name
     work_root = resolve_path(cfg["output"]["run_dir"], root)
     assert work_root is not None
@@ -475,19 +376,10 @@ def main() -> None:
         output=nodeo_output,
         root=root,
     )
-    latent_h5 = infer_observations(
-        root=root,
-        cfg=cfg,
-        split=split,
-        manifest_row=manifest_row,
-        work_dir=work_dir,
-        score_checkpoint=score_checkpoint,
-    )
     sde_output = fit_sde(
         root=root,
         cfg=cfg,
         split=split,
-        latent_h5=latent_h5,
         nodeo_summary=selected_summary,
         work_dir=work_dir,
     )
@@ -505,7 +397,7 @@ def main() -> None:
         "patient": patient_name,
         "source_path": manifest_row["source_path"],
         "nodeo_output": relative_or_absolute(nodeo_output, root),
-        "latent_observations": relative_or_absolute(latent_h5, root),
+        "uncertainty_source": "nodeo_residual_ambiguity",
         "sde_output": relative_or_absolute(sde_output, root),
         "ef_output": relative_or_absolute(ef_output, root),
         "ef": ef["ef"],

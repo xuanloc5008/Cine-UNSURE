@@ -13,8 +13,8 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cunsure_monai3d.config import project_root, resolve_path, select_device
-from cunsure_monai3d.pathology import (
+from cardiac_nodeo_uq.config import project_root, resolve_path, select_device
+from cardiac_nodeo_uq.pathology import (
     PathologyClassifier,
     clinical_features,
     pathology_probability_bands,

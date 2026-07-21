@@ -14,16 +14,16 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cunsure_monai3d.config import as_tuple_int, load_yaml, project_root, resolve_path, select_device
-from cunsure_monai3d.nodeo_dir import NODEODIRModel
-from cunsure_monai3d.nodeo_ops import (
+from cardiac_nodeo_uq.config import as_tuple_int, load_yaml, project_root, resolve_path, select_device
+from cardiac_nodeo_uq.nodeo_dir import NODEODIRModel
+from cardiac_nodeo_uq.nodeo_ops import (
     LocalNCC3D,
     SpatialTransformer3D,
     nodeo_jacobian_metrics,
     smoothness_loss,
     velocity_magnitude_loss,
 )
-from cunsure_monai3d.nodeo_roi_data import NODEOROISequenceDataset
+from cardiac_nodeo_uq.nodeo_roi_data import NODEOROISequenceDataset
 
 
 def set_seed(seed: int) -> None:
@@ -230,7 +230,7 @@ def fit_sequence(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/train_nodeo_dir_roi.yaml")
+    parser.add_argument("--config", default="configs/acdc/train_nodeo_dir_roi_dopri5.yaml")
     parser.add_argument("--split", required=True, choices=("train", "val", "test"))
     parser.add_argument("--start-index", type=int, default=0)
     parser.add_argument("--limit", type=int)

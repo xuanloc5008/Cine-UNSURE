@@ -8,8 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cunsure_monai3d.config import as_tuple_int, load_yaml, project_root, resolve_path
-from cunsure_monai3d.preprocess import FrameRef, scan_nifti_frames, write_hdf5
+from cardiac_nodeo_uq.config import as_tuple_int, load_yaml, project_root, resolve_path
+from cardiac_nodeo_uq.preprocess import FrameRef, scan_nifti_frames, write_hdf5
 
 
 def scan(data: dict, root: Path, key: str, exclude: list[str]) -> list[FrameRef]:
@@ -75,7 +75,7 @@ def write_split(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/prepare_hdf5.yaml")
+    parser.add_argument("--config", default="configs/acdc/prepare_hdf5.yaml")
     args = parser.parse_args()
 
     root = project_root()

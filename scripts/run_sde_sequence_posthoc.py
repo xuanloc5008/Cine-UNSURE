@@ -11,15 +11,15 @@ from pathlib import Path
 
 import torch
 from torch import Tensor
+from torch.nn import functional as F
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cunsure_monai3d.config import load_yaml, project_root, resolve_path, select_device
-from cunsure_monai3d.nodeo_ops import SpatialTransformer3D
-from cunsure_monai3d.nodeo_roi_data import canonical_source_key
-from cunsure_monai3d.sde_data import LatentObservationSequenceDataset
-from cunsure_monai3d.sde_sequence_posthoc import (
+from cardiac_nodeo_uq.config import load_yaml, project_root, resolve_path, select_device
+from cardiac_nodeo_uq.nodeo_ops import SpatialTransformer3D
+from cardiac_nodeo_uq.nodeo_roi_data import canonical_source_key
+from cardiac_nodeo_uq.sde_sequence_posthoc import (
     PerSequencePostHocSDERNN,
     fit_linear_basis,
     project_observation_covariance,
@@ -110,9 +110,56 @@ def normalize_codes(codes: Tensor, covariance: Tensor | None = None) -> tuple[Te
     return normalized, scale, normalized_covariance
 
 
+def gaussian_smooth_ambiguity(
+    values: Tensor,
+    *,
+    kernel_size: int,
+    sigma: float,
+) -> Tensor:
+    if kernel_size < 1 or kernel_size % 2 == 0:
+        raise ValueError("ambiguity kernel_size must be a positive odd integer")
+    if sigma <= 0:
+        raise ValueError("ambiguity sigma must be positive")
+    radius = kernel_size // 2
+    coordinates = torch.arange(kernel_size, device=values.device, dtype=values.dtype) - radius
+    kernel_1d = torch.exp(-0.5 * (coordinates / float(sigma)).square())
+    kernel_1d = kernel_1d / kernel_1d.sum()
+    kernel = torch.einsum("i,j,k->ijk", kernel_1d, kernel_1d, kernel_1d)
+    kernel = kernel[None, None]
+    padded = F.pad(values[:, None], (radius,) * 6, mode="replicate")
+    return F.conv3d(padded, kernel)[:, 0]
+
+
+def residual_ambiguity(
+    images: Tensor,
+    predicted_frames: Tensor,
+    *,
+    mode: str,
+    kernel_size: int,
+    sigma: float,
+    epsilon: float,
+) -> tuple[Tensor, Tensor]:
+    residual_squared = (images - predicted_frames).square().mean(dim=1)
+    if mode == "gaussian":
+        variance_proxy = gaussian_smooth_ambiguity(
+            residual_squared,
+            kernel_size=kernel_size,
+            sigma=sigma,
+        )
+    elif mode == "none":
+        variance_proxy = residual_squared
+    else:
+        raise ValueError("ambiguity mode must be 'none' or 'gaussian'")
+    variance_proxy = variance_proxy + float(epsilon)
+    denominator = variance_proxy.flatten(1).amax(dim=1).clamp_min(float(epsilon))
+    ambiguity = variance_proxy / denominator[:, None, None, None]
+    # I0 is mapped to itself and is treated as a deterministic initial state.
+    ambiguity[0].zero_()
+    return residual_squared, ambiguity.clamp(0.0, 1.0)
+
+
 def fit_sequence(
     *,
-    sample: dict[str, object],
     nodeo_payload: dict[str, object],
     cfg: dict[str, object],
     device: torch.device,
@@ -122,42 +169,30 @@ def fit_sequence(
     model_cfg = dict(cfg["model"])  # type: ignore[arg-type]
     fit_cfg = dict(cfg["fit"])  # type: ignore[arg-type]
     covariance_cfg = dict(cfg["covariance"])  # type: ignore[arg-type]
+    ambiguity_cfg = dict(cfg["ambiguity"])  # type: ignore[arg-type]
 
     if "images" not in nodeo_payload:
         raise KeyError("NODEO output must contain the cropped ROI image sequence under 'images'")
     images = nodeo_payload["images"].float().to(device)  # type: ignore[union-attr]
-    times = sample["times"].float().to(device)  # type: ignore[union-attr]
-    z = sample["z"].float().to(device)  # type: ignore[union-attr]
-    latent_covariance = sample["R"].float().to(device)  # type: ignore[union-attr]
+    times = nodeo_payload["times"].float().to(device)  # type: ignore[union-attr]
     phi_bar = nodeo_payload["phi_bar"].float().to(device)  # type: ignore[union-attr]
     nodeo_displacement = nodeo_payload.get("displacement")
     if nodeo_displacement is None:
         nodeo_displacement = phi_bar - phi_bar[0:1]
     nodeo_displacement = nodeo_displacement.float().to(device)  # type: ignore[union-attr]
 
-    lengths = {len(times), len(z), len(images), len(phi_bar), len(nodeo_displacement)}
+    lengths = {len(times), len(images), len(phi_bar), len(nodeo_displacement)}
     if len(lengths) != 1:
         raise ValueError(
-            "CineMA/C-UNSURE and NODEO sequence lengths differ: "
-            f"times={len(times)}, z={len(z)}, images={len(images)}, "
+            "NODEO sequence tensors have different lengths: "
+            f"times={len(times)}, images={len(images)}, "
             f"phi_bar={len(phi_bar)}, displacement={len(nodeo_displacement)}"
         )
     length = len(times)
     if length < 2:
         raise ValueError("a cine sequence must contain at least two frames")
-    nodeo_raw_times = nodeo_payload.get("raw_time_indices")
-    if nodeo_raw_times is not None:
-        latent_raw_times = sample["raw_time_indices"].long()  # type: ignore[union-attr]
-        nodeo_raw_times = nodeo_raw_times.long()  # type: ignore[union-attr]
-        if not torch.equal(latent_raw_times.cpu(), nodeo_raw_times.cpu()):
-            raise ValueError(
-                "CineMA/C-UNSURE and NODEO frame indices differ: "
-                f"latent={latent_raw_times.tolist()}, NODEO={nodeo_raw_times.tolist()}"
-            )
     images = images[:length]
     times = times[:length]
-    z = z[:length]
-    latent_covariance = latent_covariance[:length]
     phi_bar = phi_bar[:length]
     nodeo_displacement = nodeo_displacement[:length]
     if tuple(images.shape[-3:]) != tuple(nodeo_displacement.shape[-3:]):
@@ -166,21 +201,40 @@ def fit_sequence(
             f"{tuple(nodeo_displacement.shape[-3:])}"
         )
 
+    transformer = SpatialTransformer3D(tuple(int(v) for v in images.shape[-3:])).to(device)
+    with torch.no_grad():
+        nodeo_predicted_frames = transformer(
+            images[0:1].expand(length, -1, -1, -1, -1),
+            nodeo_displacement,
+        )
+        residual_squared, ambiguity_map = residual_ambiguity(
+            images,
+            nodeo_predicted_frames,
+            mode=str(ambiguity_cfg.get("mode", "gaussian")),
+            kernel_size=int(ambiguity_cfg.get("kernel_size", 5)),
+            sigma=float(ambiguity_cfg.get("sigma", 1.0)),
+            epsilon=float(ambiguity_cfg.get("epsilon", 1.0e-8)),
+        )
+
     motion_mean, motion_basis, motion_code = fit_linear_basis(
         nodeo_displacement.reshape(length, -1), int(model_cfg["motion_rank"])
     )
-    observation_mean, observation_basis, observation_code = fit_linear_basis(
-        z, int(model_cfg["observation_rank"])
+    # U_ambiguity is used directly as an isotropic voxel-space covariance
+    # proxy, then projected into the same low-rank basis as NODEO motion.
+    ambiguity_diagonal = ambiguity_map[:, None].expand(-1, 3, -1, -1, -1).reshape(length, -1)
+    ambiguity_diagonal = ambiguity_diagonal * float(ambiguity_cfg.get("variance_scale", 1.0))
+    observation_covariance = project_observation_covariance(
+        ambiguity_diagonal,
+        motion_basis,
     )
-    observation_covariance = project_observation_covariance(latent_covariance, observation_basis)
-    motion_code, motion_scale, _ = normalize_codes(motion_code)
-    observation_code, observation_scale, observation_covariance = normalize_codes(
-        observation_code, observation_covariance
+    cvgru_input, motion_scale, observation_covariance = normalize_codes(
+        motion_code, observation_covariance
     )
     assert observation_covariance is not None
+    motion_code = cvgru_input
 
     model = PerSequencePostHocSDERNN(
-        observation_dim=int(observation_code.shape[1]),
+        observation_dim=int(cvgru_input.shape[1]),
         motion_dim=int(motion_code.shape[1]),
         hidden_dim=int(model_cfg["hidden_dim"]),
         mlp_hidden_dim=int(model_cfg["mlp_hidden_dim"]),
@@ -213,7 +267,7 @@ def fit_sequence(
         )
         observed = ~(target_mask | held_out)
         observed[0] = True
-        output = model.forward_mean(times=times, observation=observation_code, mask=observed)
+        output = model.forward_mean(times=times, observation=cvgru_input, mask=observed)
         masked_mse = torch.nn.functional.mse_loss(output.motion_code[target_mask], motion_code[target_mask])
         reference_mse = torch.nn.functional.mse_loss(output.motion_code[0], motion_code[0])
         loss = masked_mse + reference_mse
@@ -229,7 +283,7 @@ def fit_sequence(
         with torch.no_grad():
             validation_output = model.forward_mean(
                 times=times,
-                observation=observation_code,
+                observation=cvgru_input,
                 mask=validation_observation_mask,
             )
             validation_loss = float(
@@ -256,14 +310,14 @@ def fit_sequence(
 
     process_covariance = model.estimate_process_covariance(
         times=times,
-        observation=observation_code,
+        observation=cvgru_input,
         observation_covariance=observation_covariance,
         covariance_floor=float(covariance_cfg["floor"]),
         shrinkage=float(covariance_cfg["process_shrinkage"]),
     ).detach()
     analytical = model.propagate_analytical(
         times=times,
-        observation=observation_code,
+        observation=cvgru_input,
         observation_covariance=observation_covariance,
         process_covariance=process_covariance,
         init_covariance=float(covariance_cfg["init_covariance"]),
@@ -272,11 +326,21 @@ def fit_sequence(
 
     predicted_motion_code = analytical.motion_code * motion_scale
     motion_factor = analytical.motion_covariance_factor * motion_scale[None, :, None]
+    ambiguity_motion_factor = (
+        analytical.ambiguity_motion_covariance_factor * motion_scale[None, :, None]
+    )
+    process_motion_factor = (
+        analytical.process_motion_covariance_factor * motion_scale[None, :, None]
+    )
     sde_displacement_flat = motion_mean[None] + predicted_motion_code @ motion_basis.T
     # The deformation is defined relative to I0, so frame zero is deterministically identity.
     sde_displacement_flat = sde_displacement_flat - sde_displacement_flat[0:1]
     motion_factor = motion_factor.clone()
+    ambiguity_motion_factor = ambiguity_motion_factor.clone()
+    process_motion_factor = process_motion_factor.clone()
     motion_factor[0].zero_()
+    ambiguity_motion_factor[0].zero_()
+    process_motion_factor[0].zero_()
     sde_reconstructed_displacement = sde_displacement_flat.reshape_as(nodeo_displacement)
     identity = phi_bar - nodeo_displacement
     sde_reconstructed_deformation = identity + sde_reconstructed_displacement
@@ -310,17 +374,25 @@ def fit_sequence(
         nodeo_peak_index = int(nodeo_flat.square().mean(dim=1).argmax())
         sde_peak_index = int(sde_displacement_flat.square().mean(dim=1).argmax())
 
-    voxel_variance: list[Tensor] = []
-    for frame_factor in motion_factor:
-        full_factor = motion_basis @ frame_factor
-        voxel_variance.append(full_factor.square().sum(dim=1).reshape_as(nodeo_displacement[0]))
+    def voxel_variance_from_factor(factors: Tensor) -> Tensor:
+        values: list[Tensor] = []
+        for frame_factor in factors:
+            full_factor = motion_basis @ frame_factor
+            values.append(full_factor.square().sum(dim=1).reshape_as(nodeo_displacement[0]))
+        return torch.stack(values)
+
+    ambiguity_voxel_variance = voxel_variance_from_factor(ambiguity_motion_factor)
+    process_voxel_variance = voxel_variance_from_factor(process_motion_factor)
+    # Report the decomposition exactly. Separate PSD stabilization of the two
+    # covariance streams can otherwise introduce a small diagonal mismatch.
+    voxel_variance = ambiguity_voxel_variance + process_voxel_variance
 
     payload: dict[str, object] = {
-        "method": "nodeo_mean_posthoc_analytical_sde_cvgru",
+        "method": "nodeo_residual_ambiguity_posthoc_sde_cvgru",
         "mean_source": "nodeo_locked",
-        "dataset": sample["dataset"],
-        "source_path": sample["source_path"],
-        "raw_time_indices": sample["raw_time_indices"],
+        "dataset": nodeo_payload["dataset"],
+        "source_path": nodeo_payload["source_path"],
+        "raw_time_indices": nodeo_payload["raw_time_indices"],
         "times": times.detach().cpu(),
         "images": images.detach().cpu().half(),
         "nodeo_mean_deformation": phi_bar.detach().cpu().half(),
@@ -331,15 +403,24 @@ def fit_sequence(
         "predicted_frames": predicted_frames.detach().cpu().half(),
         "sde_reconstructed_deformation": sde_reconstructed_deformation.detach().cpu().half(),
         "sde_reconstructed_displacement": sde_reconstructed_displacement.detach().cpu().half(),
-        "deformation_variance_diag": torch.stack(voxel_variance).detach().cpu().float(),
+        "residual_squared": residual_squared.detach().cpu().float(),
+        "ambiguity_map": ambiguity_map.detach().cpu().float(),
+        "ambiguity_definition": (
+            "U_ambiguity = normalize_frame(G_sigma * "
+            "(I_t - warp(I_0, phi_NODEO_t))^2); U_ambiguity[0] = 0"
+        ),
+        "deformation_variance_diag": voxel_variance.detach().cpu().float(),
+        "ambiguity_deformation_variance_diag": ambiguity_voxel_variance.detach().cpu().float(),
+        "process_deformation_variance_diag": process_voxel_variance.detach().cpu().float(),
         "motion_basis": motion_basis.detach().cpu().float(),
         "motion_covariance_factor": motion_factor.detach().cpu().float(),
+        "ambiguity_motion_covariance_factor": ambiguity_motion_factor.detach().cpu().float(),
+        "process_motion_covariance_factor": process_motion_factor.detach().cpu().float(),
         "hidden_mean": analytical.hidden_mean.detach().cpu().float(),
         "hidden_covariance": analytical.hidden_covariance.detach().cpu().float(),
+        "hidden_ambiguity_covariance": analytical.hidden_ambiguity_covariance.detach().cpu().float(),
+        "hidden_process_covariance": analytical.hidden_process_covariance.detach().cpu().float(),
         "process_covariance": process_covariance.detach().cpu().float(),
-        "observation_mean": observation_mean.detach().cpu().float(),
-        "observation_basis": observation_basis.detach().cpu().float(),
-        "observation_scale": observation_scale.detach().cpu().float(),
         "motion_mean": motion_mean.detach().cpu().float(),
         "motion_scale": motion_scale.detach().cpu().float(),
         "model_state": {key: value.detach().cpu() for key, value in best_state.items()},
@@ -352,7 +433,8 @@ def fit_sequence(
         ),
         "uncertainty_training": (
             "post-hoc only; SDE-CVGRU weights optimized with masked-frame MSE, "
-            "while the final mean trajectory remains locked to NODEO"
+            "U_ambiguity enters analytical covariance directly, and the final "
+            "mean trajectory remains locked to NODEO"
         ),
     }
     metrics: dict[str, float | int | str] = {
@@ -362,7 +444,7 @@ def fit_sequence(
         "runtime_seconds": time.monotonic() - started,
         "frames": length,
         "motion_rank": int(motion_basis.shape[1]),
-        "observation_rank": int(observation_basis.shape[1]),
+        "cvgru_input_rank": int(motion_basis.shape[1]),
         "mean_source": "nodeo_locked",
         "pca_reconstruction_mse": float(pca_reconstruction_mse),
         "sde_reconstruction_mse": float(sde_reconstruction_mse),
@@ -372,7 +454,10 @@ def fit_sequence(
         "nodeo_peak_motion_index": nodeo_peak_index,
         "sde_peak_motion_index": sde_peak_index,
         "peak_motion_index_error": abs(sde_peak_index - nodeo_peak_index),
-        "mean_deformation_variance": float(torch.stack(voxel_variance).mean()),
+        "mean_deformation_variance": float(voxel_variance.mean()),
+        "mean_ambiguity_deformation_variance": float(ambiguity_voxel_variance.mean()),
+        "mean_process_deformation_variance": float(process_voxel_variance.mean()),
+        "mean_ambiguity": float(ambiguity_map.mean()),
     }
     return payload, metrics
 
@@ -392,17 +477,8 @@ def main() -> None:
     set_seed(seed)
     device = select_device(cfg.get("device", "auto"))
     configure_torch(device)
-    data_cfg = cfg["data"]
-    h5_path = resolve_path(configured_split(data_cfg["h5"], args.split), root)
     summary_path = resolve_path(configured_split(cfg["nodeo"]["summaries"], args.split), root)
-    assert h5_path is not None and summary_path is not None
-    dataset = LatentObservationSequenceDataset(
-        h5_path,
-        min_length=int(data_cfg.get("min_length", 2)),
-        covariance=str(data_cfg.get("covariance", "diag")),
-        normalize_time=True,
-    )
-    dataset_index = {portable_source_key(ref.source_path): index for index, ref in enumerate(dataset.refs)}
+    assert summary_path is not None
     rows = load_summary(summary_path)
     stop = len(rows) if args.limit is None else min(len(rows), args.start_index + args.limit)
     output_root = resolve_path(cfg["output"]["run_dir"], root)
@@ -422,14 +498,9 @@ def main() -> None:
         output_path = output_dir / f"{row_index:06d}_{sid}.pt"
         if sid in completed and output_path.exists() and not args.overwrite:
             continue
-        key = portable_source_key(source_path)
-        if key not in dataset_index:
-            raise KeyError(f"latent H5 has no sequence matching NODEO source: {source_path}")
-        sample = dataset[dataset_index[key]]
         nodeo_path = resolve_nodeo_output(row, summary_path, root)
         nodeo_payload = torch.load(nodeo_path, map_location="cpu", weights_only=False)
         payload, metrics = fit_sequence(
-            sample=sample,
             nodeo_payload=nodeo_payload,
             cfg=cfg,
             device=device,
@@ -442,8 +513,8 @@ def main() -> None:
         summary_row = {
             "sequence_id": sid,
             "split": args.split,
-            "dataset": sample["dataset"],
-            "source_path": sample["source_path"],
+            "dataset": nodeo_payload["dataset"],
+            "source_path": nodeo_payload["source_path"],
             "output": str(output_path),
             **metrics,
         }

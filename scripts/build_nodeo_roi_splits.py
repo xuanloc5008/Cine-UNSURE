@@ -13,8 +13,8 @@ import h5py
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cunsure_monai3d.config import load_yaml, project_root, resolve_path
-from cunsure_monai3d.nodeo_roi_data import canonical_source_key, decode_h5_string
+from cardiac_nodeo_uq.config import load_yaml, project_root, resolve_path
+from cardiac_nodeo_uq.nodeo_roi_data import canonical_source_key, decode_h5_string
 
 
 def classify_source(path: str) -> tuple[str, str]:
@@ -85,7 +85,7 @@ def shuffled_split(items: list[str], fractions: tuple[float, ...], seed: int) ->
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/nodeo_roi_splits.yaml")
+    parser.add_argument("--config", default="configs/acdc/nodeo_roi_splits.yaml")
     args = parser.parse_args()
 
     root = project_root()

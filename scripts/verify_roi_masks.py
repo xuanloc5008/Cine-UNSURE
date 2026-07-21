@@ -8,13 +8,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cunsure_monai3d.config import load_yaml, project_root
-from cunsure_monai3d.preprocess import candidate_mask_paths, scan_nifti_frames
+from cardiac_nodeo_uq.config import load_yaml, project_root
+from cardiac_nodeo_uq.preprocess import candidate_mask_paths, scan_nifti_frames
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/prepare_hdf5.yaml")
+    parser.add_argument("--config", default="configs/acdc/prepare_hdf5.yaml")
     parser.add_argument("--max-missing", type=int, default=30)
     parser.add_argument("--max-examples", type=int, default=10)
     args = parser.parse_args()

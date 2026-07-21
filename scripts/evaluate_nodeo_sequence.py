@@ -11,8 +11,8 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cunsure_monai3d.config import project_root, resolve_path, select_device
-from cunsure_monai3d.nodeo_ops import LocalNCC3D, jacobian_det_3d, smoothness_loss
+from cardiac_nodeo_uq.config import project_root, resolve_path, select_device
+from cardiac_nodeo_uq.nodeo_ops import LocalNCC3D, jacobian_det_3d, smoothness_loss
 
 
 def global_ncc(left: torch.Tensor, right: torch.Tensor) -> torch.Tensor:

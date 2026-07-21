@@ -16,9 +16,6 @@ fi
 if [[ -n "${SPLIT:-}" ]]; then
   cmd+=(--split "${SPLIT}")
 fi
-if [[ -n "${SCORE_CHECKPOINT:-}" ]]; then
-  cmd+=(--score-checkpoint "${SCORE_CHECKPOINT}")
-fi
 if [[ "${OVERWRITE_NODEO:-0}" == "1" ]]; then
   cmd+=(--overwrite-nodeo)
 fi

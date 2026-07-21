@@ -15,8 +15,8 @@ from torch.utils.data import DataLoader, TensorDataset
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cunsure_monai3d.config import load_yaml, project_root, resolve_path, select_device
-from cunsure_monai3d.pathology import (
+from cardiac_nodeo_uq.config import load_yaml, project_root, resolve_path, select_device
+from cardiac_nodeo_uq.pathology import (
     ACDC_PATHOLOGIES,
     PathologyClassifier,
     clinical_feature_names,

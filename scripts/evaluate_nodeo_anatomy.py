@@ -14,11 +14,10 @@ from scipy.ndimage import binary_erosion, distance_transform_edt
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cunsure_monai3d.config import project_root, resolve_path, select_device
-from cunsure_monai3d.deformation_data import _candidate_mask_paths, _load_mask_bbox
-from cunsure_monai3d.nodeo_ops import SpatialTransformer3D
-from cunsure_monai3d.nodeo_roi_data import canonical_source_key
-from cunsure_monai3d.preprocess import crop_or_pad_around_bbox
+from cardiac_nodeo_uq.config import project_root, resolve_path, select_device
+from cardiac_nodeo_uq.nodeo_ops import SpatialTransformer3D
+from cardiac_nodeo_uq.nodeo_roi_data import canonical_source_key
+from cardiac_nodeo_uq.preprocess import candidate_mask_paths, crop_or_pad_around_bbox, load_mask_bbox
 
 
 LABELS = {1: "RV", 2: "MYO", 3: "LV"}
@@ -76,7 +75,7 @@ def load_masks_by_time(source_path: Path) -> dict[int, np.ndarray]:
     if source.ndim != 4:
         raise ValueError(f"expected 4D cine source, got {source.shape} from {source_path}")
     masks: dict[int, np.ndarray] = {}
-    for mask_path in _candidate_mask_paths(source_path):
+    for mask_path in candidate_mask_paths(source_path):
         array = np.asarray(nib.load(str(mask_path)).get_fdata(dtype=np.float32))
         if array.ndim == 4 and array.shape[-1] == source.shape[-1]:
             for time_index in range(array.shape[-1]):
@@ -137,7 +136,7 @@ def main() -> None:
         )
 
     image_shape = tuple(int(v) for v in payload["images"].shape[-3:])
-    bbox = _load_mask_bbox(
+    bbox = load_mask_bbox(
         source_path,
         time_axis=-1,
         margin=(0, 16, 16),

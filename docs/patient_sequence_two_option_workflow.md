@@ -1,71 +1,59 @@
 # Patient-configurable two-option workflow
 
-The workflow selects exactly one cine patient from
-`processed/acdc/nodeo_roi_splits.jsonl` and executes all remaining stages in a
-single command.
+The workflow selects one cine sequence from
+`processed/acdc/nodeo_roi_splits.jsonl`. The ROI H5 is the only image source;
+no external uncertainty encoder, latent H5, or observation checkpoint is
+required.
 
-If this manifest is absent on a new server, the entry point automatically runs
-`scripts/build_nodeo_roi_splits.py` with
-`configs/acdc/nodeo_roi_splits.yaml` before selecting the patient.
+If the manifest is absent, the entry point builds it with
+`configs/acdc/nodeo_roi_splits.yaml`.
 
 ## Shared stages
 
-Both options perform the following operations for the selected patient:
+Both options perform these operations for the selected patient:
 
-1. Read the complete cropped ROI cine sequence from its H5 split.
-2. Run the trained score C-UNSURE checkpoint on every frame.
-3. Run CineMA and propagate C-UNSURE image uncertainty into latent covariance.
-4. Package `z[k]` and `Sigma_z[k]` into a patient-only H5 file.
-5. Fit the patient-specific mean SDE-CVGRU using masked-frame MSE against NODEO
-   motion codes.
-6. Freeze the model and propagate analytical covariance with Jacobians.
-7. Save mean deformation, predicted cine frames, and voxel/frame uncertainty.
-8. Read ACDC ED/ES indices from `Info.cfg` and produce the uncalibrated EF
-   prediction band.
+1. Load the complete cropped ROI cine sequence.
+2. Obtain the NODEO mean deformation `phi_bar[k]` and predicted frames.
+3. Compute registration ambiguity directly from the NODEO residual:
 
-By default `observation.resume: false`, so C-UNSURE and CineMA are executed
-again on every invocation. Set it to `true` only when intentionally resuming a
-partially completed patient inference.
+   ```text
+   residual[k] = (I[k] - warp(I[0], phi_bar[k]))^2
+   U_ambiguity[k] = normalize_per_frame(GaussianSmooth(residual[k]))
+   ```
 
-The Score C-UNSURE checkpoint defaults to
-`runs/acdc/cunsure_score/best.pt`. It can be overridden without editing YAML:
+4. Fit a patient-specific SDE-CVGRU with masked-frame MSE against low-rank
+   NODEO motion codes. No uncertainty term is optimized.
+5. Freeze the fitted network and propagate `U_ambiguity` analytically through
+   the CVGRU and deformation decoder Jacobians.
+6. Add process covariance from the SDE dynamics and retain the NODEO
+   deformation as the final mean trajectory.
+7. Save predicted frames, voxel-wise deformation variance, and separate
+   ambiguity/process covariance components.
+8. Read ACDC ED/ES indices and propagate deformation covariance to an
+   uncalibrated EF prediction band.
 
-```bash
-SCORE_CHECKPOINT=runs/my_score_run/best.pt \
-PATIENT=patient101 SPLIT=test ./run_patient_sequence_workflow.sh
-```
-
-The entry point validates that this file exists and contains
-`method: unsure_ardae_score` before starting NODEO.
+The reported uncertainty is a registration-ambiguity proxy plus SDE process
+uncertainty. It is not scanner-noise covariance or a self-calibrated coverage
+guarantee.
 
 ## Option 1
 
-NODEO is fitted for the selected cine sequence before the shared stages. Its
-configuration is selected through `nodeo.run_config`.
+Fit NODEO for the selected sequence, then run the shared stages:
 
 ```bash
 OPTION=1 PATIENT=patient101 SPLIT=test ./run_patient_sequence_workflow.sh
 ```
 
-Set `OVERWRITE_NODEO=1` to refit an existing on-demand NODEO result.
+Set `OVERWRITE_NODEO=1` to refit an existing on-demand result.
 
 ## Option 2 (default)
 
-The existing NODEO result is selected from:
-
-```text
-runs/acdc/nodeo_dir_euler/test
-```
-
-Then C-UNSURE/CineMA and the SDE-CVGRU stages are executed for that same
-patient:
+Reuse an existing NODEO output from the directory configured by
+`nodeo.precomputed_dir`, then run the same ambiguity and SDE stages:
 
 ```bash
 PATIENT=patient101 SPLIT=test ./run_patient_sequence_workflow.sh
 ```
-
-The same values can be stored directly in
-`configs/acdc/patient_sequence_workflow.yaml`.
 
 ## Outputs
 
@@ -78,24 +66,36 @@ runs/acdc/patient_sequence_workflow/test/patient101/
 The directory contains:
 
 ```text
-observation_frames/          per-frame C-UNSURE/CineMA outputs
-latent_observations.h5       patient-only z[k] and Sigma_z[k]
 selected_nodeo_summary.jsonl selected or newly fitted NODEO result
 sde/test/*.pt                mean deformation and analytical uncertainty
-ef_prediction_band.json      EF, variance, standard error, lower and upper band
-workflow_result.json         paths and final EF summary
+ef_prediction_band.json      EF, variance, standard error, and prediction band
+workflow_result.json         paths, uncertainty source, and final EF summary
 ```
 
-The final `.pt` stores compact low-rank covariance and direct voxel variance:
+The SDE `.pt` stores:
 
 ```text
 mean_deformation
 total_displacement
 predicted_frames
+residual_squared
+ambiguity_map
 deformation_variance_diag
+ambiguity_deformation_variance_diag
+process_deformation_variance_diag
 motion_basis
 motion_covariance_factor
-hidden_mean
+ambiguity_motion_covariance_factor
+process_motion_covariance_factor
 hidden_covariance
-process_covariance
+hidden_ambiguity_covariance
+hidden_process_covariance
+```
+
+The diagonal decomposition is exact in the saved output:
+
+```text
+deformation_variance_diag
+  = ambiguity_deformation_variance_diag
+  + process_deformation_variance_diag
 ```

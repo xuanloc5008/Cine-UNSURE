@@ -13,7 +13,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cunsure_monai3d.clinical_metrics import (
+from cardiac_nodeo_uq.clinical_metrics import (
     delta_variance_diag,
     delta_variance_factor,
     ejection_fraction,
@@ -22,9 +22,14 @@ from cunsure_monai3d.clinical_metrics import (
     resize_mask,
     volume_from_deformation,
 )
-from cunsure_monai3d.config import project_root, resolve_path
-from cunsure_monai3d.deformation_data import _bbox_from_mask, _mask_to_dhw, crop_or_pad_around_bbox
-from cunsure_monai3d.preprocess import center_crop_or_pad, extract_frame_array
+from cardiac_nodeo_uq.config import project_root, resolve_path
+from cardiac_nodeo_uq.preprocess import (
+    bbox_from_mask,
+    center_crop_or_pad,
+    crop_or_pad_around_bbox,
+    extract_frame_array,
+    mask_to_dhw,
+)
 
 
 def parse_labels(value: str | None) -> list[float] | None:
@@ -86,7 +91,7 @@ def load_reference_mask(
             if candidate.name.endswith(".nii") or candidate.name.endswith(".nii.gz")
         ]
         for candidate in candidates:
-            candidate_mask = _mask_to_dhw(
+            candidate_mask = mask_to_dhw(
                 nib.load(str(candidate)).get_fdata(dtype=np.float32),
                 time_axis=time_axis,
                 path=candidate,
@@ -94,7 +99,7 @@ def load_reference_mask(
             union = candidate_mask if union is None else np.logical_or(union, candidate_mask)
         if union is None:
             raise FileNotFoundError(f"no sibling ROI masks found next to {path}")
-        bbox = _bbox_from_mask(union, roi_mask_margin)
+        bbox = bbox_from_mask(union, roi_mask_margin)
     vol = crop_or_pad_around_bbox(vol, bbox, volume_size) if roi_mask_crop else center_crop_or_pad(vol, volume_size)
     mask = torch.from_numpy(vol).float()
     if labels:

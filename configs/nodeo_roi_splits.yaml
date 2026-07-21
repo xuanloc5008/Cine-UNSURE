@@ -1,9 +1,0 @@
-seed: 2026
-
-data:
-  volume_size: [16, 96, 96]
-  roi_h5_files:
-    - processed/train_cunsure_roi.h5
-    - processed/val_cunsure_roi.h5
-    - processed/test_cunsure_roi.h5
-  manifest: processed/nodeo_roi_splits.jsonl
