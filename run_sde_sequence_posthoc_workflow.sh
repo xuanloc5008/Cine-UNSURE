@@ -20,6 +20,12 @@ run_split() {
   if [[ -n "${LIMIT:-}" ]]; then
     cmd+=(--limit "${LIMIT}")
   fi
+  if [[ -n "${NODEO_SUMMARY_ROOT:-}" ]]; then
+    cmd+=(--nodeo-summary "${NODEO_SUMMARY_ROOT}/${split}/summary.jsonl")
+  fi
+  if [[ -n "${SDE_OUTPUT_ROOT:-}" ]]; then
+    cmd+=(--output-root "${SDE_OUTPUT_ROOT}")
+  fi
   if [[ "${OVERWRITE:-0}" == "1" ]]; then
     cmd+=(--overwrite)
   fi

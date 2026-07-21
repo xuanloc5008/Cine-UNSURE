@@ -36,9 +36,26 @@ The reported uncertainty is a registration-ambiguity proxy plus SDE process
 uncertainty. It is not scanner-noise covariance or a self-calibrated coverage
 guarantee.
 
+## Solver selection
+
+Choose the NODEO solver once in
+`configs/acdc/patient_sequence_workflow.yaml`:
+
+```yaml
+nodeo:
+  solver: rk4  # euler, rk4, or dopri5
+```
+
+Each profile maps to its own NODEO configuration, precomputed directory, and
+SDE output directory. A temporary shell override is also supported:
+
+```bash
+SOLVER=euler PATIENT=patient101 SPLIT=test ./run_patient_sequence_workflow.sh
+```
+
 ## Option 1
 
-Fit NODEO for the selected sequence, then run the shared stages:
+Fit NODEO with the selected solver for the sequence, then run the shared stages:
 
 ```bash
 OPTION=1 PATIENT=patient101 SPLIT=test ./run_patient_sequence_workflow.sh
@@ -48,8 +65,8 @@ Set `OVERWRITE_NODEO=1` to refit an existing on-demand result.
 
 ## Option 2 (default)
 
-Reuse an existing NODEO output from the directory configured by
-`nodeo.precomputed_dir`, then run the same ambiguity and SDE stages:
+Reuse an existing NODEO output from the selected profile's
+`precomputed_dir`, then run the same ambiguity and SDE stages:
 
 ```bash
 PATIENT=patient101 SPLIT=test ./run_patient_sequence_workflow.sh
@@ -60,7 +77,7 @@ PATIENT=patient101 SPLIT=test ./run_patient_sequence_workflow.sh
 For `patient101`, outputs are stored under:
 
 ```text
-runs/acdc/patient_sequence_workflow/test/patient101/
+runs/acdc/patient_sequence_workflow/rk4/test/patient101/
 ```
 
 The directory contains:

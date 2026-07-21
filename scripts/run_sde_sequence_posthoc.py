@@ -468,6 +468,8 @@ def main() -> None:
     parser.add_argument("--split", required=True, choices=("train", "val", "test"))
     parser.add_argument("--start-index", type=int, default=0)
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--nodeo-summary")
+    parser.add_argument("--output-root")
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
@@ -477,11 +479,12 @@ def main() -> None:
     set_seed(seed)
     device = select_device(cfg.get("device", "auto"))
     configure_torch(device)
-    summary_path = resolve_path(configured_split(cfg["nodeo"]["summaries"], args.split), root)
+    summary_value = args.nodeo_summary or configured_split(cfg["nodeo"]["summaries"], args.split)
+    summary_path = resolve_path(summary_value, root)
     assert summary_path is not None
     rows = load_summary(summary_path)
     stop = len(rows) if args.limit is None else min(len(rows), args.start_index + args.limit)
-    output_root = resolve_path(cfg["output"]["run_dir"], root)
+    output_root = resolve_path(args.output_root or cfg["output"]["run_dir"], root)
     assert output_root is not None
     output_dir = output_root / args.split
     output_dir.mkdir(parents=True, exist_ok=True)

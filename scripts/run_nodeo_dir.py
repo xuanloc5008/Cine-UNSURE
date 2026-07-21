@@ -230,7 +230,7 @@ def fit_sequence(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/acdc/train_nodeo_dir_roi_dopri5.yaml")
+    parser.add_argument("--config", default="configs/acdc/train_nodeo_dir_roi.yaml")
     parser.add_argument("--split", required=True, choices=("train", "val", "test"))
     parser.add_argument("--start-index", type=int, default=0)
     parser.add_argument("--limit", type=int)

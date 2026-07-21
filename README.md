@@ -6,7 +6,7 @@ registration ambiguity map `U_ambiguity`.
 
 ```text
 cropped ROI cine sequence
-  -> sequential NODEO-DIR
+  -> sequential NODEO-DIR with configurable ODE integration
   -> mean deformation phi_bar[k]
   -> predicted frame warp(I[0], phi_bar[k])
   -> U_ambiguity[k] from the smoothed squared registration residual
@@ -65,6 +65,10 @@ Run NODEO for all splits:
 ./run_acdc_workflow.sh nodeo-all
 ```
 
+The default profile uses RK4 with `step_size: 0.05`. Euler and adaptive
+Dopri5 profiles are also available; all profiles apply Gaussian velocity
+smoothing at every ODE evaluation.
+
 Run patient-specific post-hoc SDE-CVGRU uncertainty propagation:
 
 ```bash
@@ -83,10 +87,27 @@ Use the single-patient workflow below to derive EF and its analytical band.
 
 ## Single patient
 
+Select the NODEO solver in `configs/acdc/patient_sequence_workflow.yaml`:
+
+```yaml
+nodeo:
+  solver: rk4  # euler, rk4, or dopri5
+```
+
+The selected profile controls both NODEO and the matching post-hoc SDE output.
+For a one-command override without editing YAML, set `SOLVER`, for example
+`SOLVER=dopri5`.
+
 Option 1 fits NODEO for the requested patient before uncertainty propagation:
 
 ```bash
 OPTION=1 PATIENT=patient101 SPLIT=test ./run_patient_sequence_workflow.sh
+```
+
+For example, run Option 1 with Dopri5:
+
+```bash
+SOLVER=dopri5 OPTION=1 PATIENT=patient101 SPLIT=test ./run_patient_sequence_workflow.sh
 ```
 
 Option 2, the default, reuses the configured precomputed NODEO result:

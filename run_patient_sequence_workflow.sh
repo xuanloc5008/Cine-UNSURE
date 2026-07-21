@@ -16,6 +16,9 @@ fi
 if [[ -n "${SPLIT:-}" ]]; then
   cmd+=(--split "${SPLIT}")
 fi
+if [[ -n "${SOLVER:-}" ]]; then
+  cmd+=(--solver "${SOLVER}")
+fi
 if [[ "${OVERWRITE_NODEO:-0}" == "1" ]]; then
   cmd+=(--overwrite-nodeo)
 fi

@@ -10,10 +10,21 @@ data:
   manifest_config: configs/acdc/nodeo_roi_splits.yaml
 
 nodeo:
-  # Option 1 runs NODEO for the selected patient using this configuration.
-  run_config: configs/acdc/train_nodeo_dir_roi_dopri5.yaml
-  # Option 2 reuses the existing Euler test outputs requested for this workflow.
-  precomputed_dir: runs/acdc/nodeo_dir_euler/test
+  # Change this value to euler, rk4, or dopri5.
+  solver: rk4
+  solver_profiles:
+    euler:
+      run_config: configs/acdc/train_nodeo_dir_roi_euler.yaml
+      precomputed_dir: runs/acdc/nodeo_dir_euler
+      sde_output_dir: runs/acdc/sde_sequence_posthoc_euler
+    rk4:
+      run_config: configs/acdc/train_nodeo_dir_roi.yaml
+      precomputed_dir: runs/acdc/nodeo_dir
+      sde_output_dir: runs/acdc/sde_sequence_posthoc_rk4
+    dopri5:
+      run_config: configs/acdc/train_nodeo_dir_roi_dopri5.yaml
+      precomputed_dir: runs/acdc/nodeo_dir_dopri5
+      sde_output_dir: runs/acdc/sde_sequence_posthoc_dopri5
 
 sde:
   config: configs/acdc/run_sde_sequence_posthoc.yaml

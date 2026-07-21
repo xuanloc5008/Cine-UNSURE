@@ -3,9 +3,9 @@ device: auto
 
 nodeo:
   summaries:
-    train: runs/acdc/nodeo_dir_dopri5/train/summary.jsonl
-    val: runs/acdc/nodeo_dir_dopri5/val/summary.jsonl
-    test: runs/acdc/nodeo_dir_dopri5/test/summary.jsonl
+    train: runs/acdc/nodeo_dir/train/summary.jsonl
+    val: runs/acdc/nodeo_dir/val/summary.jsonl
+    test: runs/acdc/nodeo_dir/test/summary.jsonl
 
 ambiguity:
   # U_ambiguity is computed directly from the NODEO registration residual.

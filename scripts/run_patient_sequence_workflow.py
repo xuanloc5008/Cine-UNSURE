@@ -86,6 +86,24 @@ def write_yaml(path: Path, value: dict[str, object]) -> None:
     path.write_text(yaml.safe_dump(value, sort_keys=False), encoding="utf-8")
 
 
+def select_solver_profile(
+    cfg: dict[str, object], requested_solver: str | None
+) -> tuple[str, dict[str, object]]:
+    nodeo_cfg = cfg["nodeo"]
+    solver = str(requested_solver or nodeo_cfg.get("solver", "rk4")).lower()  # type: ignore[union-attr]
+    profiles = nodeo_cfg.get("solver_profiles")  # type: ignore[union-attr]
+    if not isinstance(profiles, dict) or solver not in profiles:
+        available = sorted(profiles) if isinstance(profiles, dict) else []
+        raise ValueError(f"unsupported NODEO solver={solver!r}; available profiles: {available}")
+    profile = profiles[solver]
+    if not isinstance(profile, dict):
+        raise ValueError(f"NODEO solver profile must be a mapping: {solver}")
+    for key in ("run_config", "precomputed_dir", "sde_output_dir"):
+        if key not in profile:
+            raise KeyError(f"NODEO solver profile {solver!r} is missing {key!r}")
+    return solver, profile
+
+
 def select_manifest_row(
     manifest: Path,
     *,
@@ -154,12 +172,13 @@ def run_nodeo_on_demand(
     *,
     root: Path,
     cfg: dict[str, object],
+    run_config: str,
     split: str,
     split_index: int,
     work_dir: Path,
     overwrite: bool,
 ) -> tuple[Path, dict[str, object]]:
-    base_path = resolve_path(cfg["nodeo"]["run_config"], root)  # type: ignore[index]
+    base_path = resolve_path(run_config, root)
     assert base_path is not None
     nodeo_cfg = load_yaml(base_path)
     nodeo_cfg["device"] = cfg.get("device", nodeo_cfg.get("device", "auto"))
@@ -329,12 +348,14 @@ def main() -> None:
     parser.add_argument("--option", type=int, choices=(1, 2))
     parser.add_argument("--patient")
     parser.add_argument("--split", choices=("train", "val", "test"))
+    parser.add_argument("--solver", choices=("euler", "rk4", "dopri5"))
     parser.add_argument("--overwrite-nodeo", action="store_true")
     args = parser.parse_args()
 
     root = project_root()
     cfg = load_yaml(root / args.config)
     option = int(args.option or cfg.get("option", 2))
+    solver, solver_profile = select_solver_profile(cfg, args.solver)
     selection_cfg = cfg["selection"]
     patient = str(args.patient or selection_cfg["patient"])
     split = str(args.split or selection_cfg.get("split", "test"))
@@ -347,20 +368,21 @@ def main() -> None:
     patient_name = Path(str(manifest_row["source_path"])).parent.name
     work_root = resolve_path(cfg["output"]["run_dir"], root)
     assert work_root is not None
-    work_dir = work_root / split / patient_name
+    work_dir = work_root / solver / split / patient_name
     work_dir.mkdir(parents=True, exist_ok=True)
 
     if option == 1:
         nodeo_output, nodeo_row = run_nodeo_on_demand(
             root=root,
             cfg=cfg,
+            run_config=str(solver_profile["run_config"]),
             split=split,
             split_index=split_index,
             work_dir=work_dir,
             overwrite=bool(args.overwrite_nodeo),
         )
     else:
-        precomputed_root = resolve_path(cfg["nodeo"]["precomputed_dir"], root)
+        precomputed_root = resolve_path(str(solver_profile["precomputed_dir"]), root)
         assert precomputed_root is not None
         precomputed_dir = precomputed_root / split if (precomputed_root / split).exists() else precomputed_root
         nodeo_output, nodeo_row = select_existing_nodeo(
@@ -393,6 +415,7 @@ def main() -> None:
     ef = json.loads(ef_output.read_text(encoding="utf-8"))
     result = {
         "option": option,
+        "nodeo_solver": solver,
         "split": split,
         "patient": patient_name,
         "source_path": manifest_row["source_path"],
